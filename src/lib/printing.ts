@@ -1,8 +1,9 @@
 import {
   DOCUMENT_TYPE_LABELS,
-  PAYMENT_MODE_LABELS,
   formatCurrencyFromPaise,
   formatDateTime,
+  formatGstRate,
+  formatPaymentModeLabel,
   quantityMillisToDisplay,
 } from "./format";
 import type { PrinterProfile, SaleDetails, ShopProfile } from "../types";
@@ -55,8 +56,13 @@ function buildSharedHeader(shop: ShopProfile, sale: SaleDetails, title: string) 
       </div>
       <div>
         <strong>Payment</strong>
-        <span>${PAYMENT_MODE_LABELS[sale.paymentMode]}</span>
+        <span>${formatPaymentModeLabel(sale.paymentMode)}</span>
       </div>
+      ${
+        sale.customerName
+          ? `<div><strong>Customer</strong><span>${escapeHtml(sale.customerName)}</span></div>`
+          : ""
+      }
       <div>
         <strong>Time</strong>
         <span>${formatDateTime(sale.saleTimestamp)}</span>
@@ -74,7 +80,7 @@ function buildReceiptHtml(shop: ShopProfile, sale: SaleDetails, printerName?: st
     .map(
       ([gstRate, totals]) => `
         <tr>
-          <td>${gstRate}%</td>
+          <td>${formatGstRate(gstRate)}</td>
           <td>${formatCurrencyFromPaise(totals.taxable)}</td>
           <td>${formatCurrencyFromPaise(totals.tax)}</td>
         </tr>
@@ -88,7 +94,7 @@ function buildReceiptHtml(shop: ShopProfile, sale: SaleDetails, printerName?: st
         <tr>
           <td>
             <div class="item-name">${escapeHtml(line.itemName)}</div>
-            <div class="item-meta">${escapeHtml(line.categoryName)} • ${line.gstRate}% GST</div>
+            <div class="item-meta">${escapeHtml(line.categoryName)} • ${formatGstRate(line.gstRate)} GST</div>
           </td>
           <td>${escapeHtml(quantityMillisToDisplay(line.quantityMillis, line.unit))}</td>
           <td>${formatCurrencyFromPaise(line.unitPricePaise)}</td>
@@ -151,7 +157,7 @@ function buildInvoiceHtml(shop: ShopProfile, sale: SaleDetails, printerName?: st
     .map(
       ([gstRate, totals]) => `
         <tr>
-          <td>${gstRate}%</td>
+          <td>${formatGstRate(gstRate)}</td>
           <td>${formatCurrencyFromPaise(totals.taxable)}</td>
           <td>${formatCurrencyFromPaise(totals.tax)}</td>
           <td>${formatCurrencyFromPaise(totals.gross)}</td>
@@ -169,7 +175,7 @@ function buildInvoiceHtml(shop: ShopProfile, sale: SaleDetails, printerName?: st
           <td>${escapeHtml(line.categoryName)}</td>
           <td>${escapeHtml(quantityMillisToDisplay(line.quantityMillis, line.unit))}</td>
           <td>${formatCurrencyFromPaise(line.unitPricePaise)}</td>
-          <td>${line.gstRate}%</td>
+          <td>${formatGstRate(line.gstRate)}</td>
           <td>${formatCurrencyFromPaise(line.lineSubtotalPaise)}</td>
           <td>${formatCurrencyFromPaise(line.lineTaxPaise)}</td>
           <td>${formatCurrencyFromPaise(line.lineTotalPaise)}</td>
@@ -206,7 +212,7 @@ function buildInvoiceHtml(shop: ShopProfile, sale: SaleDetails, printerName?: st
         <section class="invoice-grid">
           <article><strong>Invoice No.</strong><span>${escapeHtml(sale.billNumber)}</span></article>
           <article><strong>Sale Time</strong><span>${formatDateTime(sale.saleTimestamp)}</span></article>
-          <article><strong>Payment Mode</strong><span>${PAYMENT_MODE_LABELS[sale.paymentMode]}</span></article>
+          <article><strong>Payment Mode</strong><span>${formatPaymentModeLabel(sale.paymentMode)}</span></article>
         </section>
         <table>
           <thead>

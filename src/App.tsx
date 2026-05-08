@@ -12,23 +12,24 @@ import {
   getSaleDetails,
   listSales,
   loadAppSnapshot,
-  saveAdminSettings,
   saveCategory,
   saveItem,
+  savePaymentOption,
   savePrinterProfile,
-  saveShopProfile,
   setCategoryActive,
   setItemActive,
+  setPaymentOptionActive,
   toDraftLinesFromSale,
 } from "./lib/db";
 import {
   DOCUMENT_TYPE_LABELS,
   GST_OPTIONS,
-  PAYMENT_MODE_LABELS,
   PRINTER_PROFILE_LABELS,
   UNIT_OPTIONS,
   formatCurrencyFromPaise,
   formatDateTime,
+  formatGstRate,
+  formatPaymentModeLabel,
   fromInputPrice,
   quantityMillisToDisplay,
   quantityMillisToString,
@@ -51,6 +52,7 @@ import type {
   DraftLine,
   GstSummaryRow,
   Item,
+  PaymentOption,
   PaymentMode,
   PaymentSummaryRow,
   PrinterProfile,
@@ -65,6 +67,18 @@ type ToastState = {
   kind: "success" | "error" | "info";
   message: string;
 } | null;
+
+type QuantityEditorState =
+  | {
+      source: "item";
+      item: Item;
+      existingDraftId: number | null;
+    }
+  | {
+      source: "line";
+      draftId: number;
+      initialQuantityMillis: number;
+    };
 
 const HOME_ACTIONS: { view: AppView; label: string; eyebrow: string }[] = [
   { view: "billing", label: "Generate Receipt", eyebrow: "Counter" },
@@ -147,12 +161,11 @@ function App() {
   const [toast, setToast] = useState<ToastState>(null);
 
   const [shopProfile, setShopProfile] = useState<ShopProfile>(INITIAL_SHOP_PROFILE);
-  const [shopProfileForm, setShopProfileForm] = useState<ShopProfile>(INITIAL_SHOP_PROFILE);
   const [adminSettingsState, setAdminSettingsState] = useState<AdminSettings>(INITIAL_ADMIN_SETTINGS);
-  const [adminForm, setAdminForm] = useState(INITIAL_ADMIN_SETTINGS);
   const [dashboardMetrics, setDashboardMetrics] = useState<DashboardMetrics>(INITIAL_METRICS);
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [paymentOptions, setPaymentOptions] = useState<PaymentOption[]>([]);
   const [printerProfiles, setPrinterProfiles] = useState<PrinterProfile[]>([]);
   const [printerOptions, setPrinterOptions] = useState<string[]>([]);
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
@@ -173,6 +186,11 @@ function App() {
     gstRate: "5",
     isActive: true,
   });
+  const [paymentOptionForm, setPaymentOptionForm] = useState({
+    id: null as number | null,
+    name: "",
+    isActive: true,
+  });
   const [printerDrafts, setPrinterDrafts] = useState<Record<PrinterProfileType, string>>({
     receipt: "",
     gst_invoice: "",
@@ -183,9 +201,15 @@ function App() {
   const [billNotes, setBillNotes] = useState("");
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<number | "all">("all");
   const [itemSearch, setItemSearch] = useState("");
+  const [adminCategorySearch, setAdminCategorySearch] = useState("");
+  const [adminItemSearch, setAdminItemSearch] = useState("");
   const [draftLines, setDraftLines] = useState<DraftLine[]>([]);
   const [selectedDraftLineId, setSelectedDraftLineId] = useState<number | null>(null);
-  const [quantityEntry, setQuantityEntry] = useState("1");
+  const [quantityEntry, setQuantityEntry] = useState("0");
+  const [quantityEditorState, setQuantityEditorState] = useState<QuantityEditorState | null>(null);
+  const [billPreviewOpen, setBillPreviewOpen] = useState(false);
+  const [previewCustomerName, setPreviewCustomerName] = useState("");
+  const [previewShouldPrint, setPreviewShouldPrint] = useState(false);
   const [reissueSource, setReissueSource] = useState<SaleDetails | null>(null);
 
   const [reportDateFrom, setReportDateFrom] = useState(todayIsoDate());
@@ -197,6 +221,8 @@ function App() {
   const [salePreview, setSalePreview] = useState<SaleDetails | null>(null);
 
   const deferredItemSearch = useDeferredValue(itemSearch.trim().toLowerCase());
+  const deferredAdminCategorySearch = useDeferredValue(adminCategorySearch.trim().toLowerCase());
+  const deferredAdminItemSearch = useDeferredValue(adminItemSearch.trim().toLowerCase());
   const deferredReportSearch = useDeferredValue(reportSearch.trim().toLowerCase());
 
   const bootstrappedRef = useRef(false);
@@ -204,10 +230,6 @@ function App() {
 
   useEffect(() => {
     const prev = prevViewRef.current;
-    if (activeView === "admin" && prev !== "admin") {
-      setShopProfileForm(shopProfile);
-      setAdminForm(adminSettingsState);
-    }
     if (activeView === "settings" && prev !== "settings") {
       setPrinterDrafts({
         receipt: printerProfiles.find((profile) => profile.profileType === "receipt")?.printerName ?? "",
@@ -216,7 +238,7 @@ function App() {
       });
     }
     prevViewRef.current = activeView;
-  }, [activeView, shopProfile, adminSettingsState, printerProfiles]);
+  }, [activeView, printerProfiles]);
 
   useEffect(() => {
     if (bootstrappedRef.current) {
@@ -254,7 +276,7 @@ function App() {
     if (categoryForm.id === null && categoryForm.name === "" && categoryForm.displayOrder === 10 && categories.length > 0) {
       setCategoryForm((current) => ({
         ...current,
-        displayOrder: Math.max(10, categories.length * 10 + 10),
+        displayOrder: getNextCategoryDisplayOrder(),
       }));
     }
   }, [
@@ -274,7 +296,19 @@ function App() {
     }
   }, [categories, selectedCategoryFilter]);
 
+  useEffect(() => {
+    const enabledPaymentOptions = paymentOptions.filter((option) => option.isActive);
+    if (enabledPaymentOptions.length === 0) {
+      return;
+    }
+
+    if (!enabledPaymentOptions.some((option) => option.name === paymentMode)) {
+      setPaymentMode(enabledPaymentOptions[0].name);
+    }
+  }, [paymentOptions, paymentMode]);
+
   const activeCategories = categories.filter((category) => category.isActive);
+  const activePaymentOptions = paymentOptions.filter((option) => option.isActive);
   const visibleItems = items.filter((item) => {
     if (!item.isActive) {
       return false;
@@ -290,19 +324,63 @@ function App() {
 
     return matchesCategory && searchMatch;
   });
+  const visibleAdminCategories = categories.filter((category) => {
+    if (!deferredAdminCategorySearch) {
+      return true;
+    }
+
+    return `${category.name} ${category.isActive ? "active" : "disabled"}`
+      .toLowerCase()
+      .includes(deferredAdminCategorySearch);
+  });
+  const visibleAdminItems = items.filter((item) => {
+    if (!deferredAdminItemSearch) {
+      return true;
+    }
+
+    return `${item.name} ${item.categoryName} ${item.unit} ${formatGstRate(item.gstRate)} ${
+      item.isActive ? "active" : "disabled"
+    }`
+      .toLowerCase()
+      .includes(deferredAdminItemSearch);
+  });
 
   const filteredReportSales = reportSales.filter((sale) => {
     if (!deferredReportSearch) {
       return true;
     }
 
-    return `${sale.billNumber} ${sale.paymentMode} ${sale.status}`
+    return `${sale.billNumber} ${sale.customerName ?? ""} ${sale.paymentMode} ${sale.status}`
       .toLowerCase()
       .includes(deferredReportSearch);
   });
 
   const selectedDraftLine = draftLines.find((line) => line.draftId === selectedDraftLineId) ?? null;
   const billingTotals = sumDraftTotals(draftLines);
+  const findOriginalLineForDraft = (draftLine: DraftLine) =>
+    reissueSource?.lines.find((line) =>
+      line.itemId != null && line.itemId !== 0 && draftLine.itemId !== 0
+        ? line.itemId === draftLine.itemId &&
+          line.unit === draftLine.unit &&
+          line.gstRate === draftLine.gstRate
+        : line.itemName === draftLine.itemName &&
+          line.categoryName === draftLine.categoryName &&
+          line.unit === draftLine.unit &&
+          line.gstRate === draftLine.gstRate,
+    ) ?? null;
+  const quantityEditorItemName =
+    quantityEditorState?.source === "item"
+      ? quantityEditorState.item.name
+      : selectedDraftLine?.itemName ?? "";
+  const quantityEditorDraftLine =
+    quantityEditorState?.source === "item"
+      ? quantityEditorState.existingDraftId != null
+        ? draftLines.find((line) => line.draftId === quantityEditorState.existingDraftId) ?? null
+        : null
+      : quantityEditorState
+        ? draftLines.find((line) => line.draftId === quantityEditorState.draftId) ?? null
+        : null;
+  const quantityEditorOriginalLine = quantityEditorDraftLine ? findOriginalLineForDraft(quantityEditorDraftLine) : null;
 
   async function bootstrapApp() {
     setLoading(true);
@@ -345,12 +423,11 @@ function App() {
 
   function applySnapshot(snapshot: AppSnapshot) {
     setShopProfile(snapshot.shopProfile);
-    setShopProfileForm(snapshot.shopProfile);
     setAdminSettingsState(snapshot.adminSettings);
-    setAdminForm(snapshot.adminSettings);
     setDashboardMetrics(snapshot.dashboardMetrics);
     setCategories(snapshot.categories);
     setItems(snapshot.items);
+    setPaymentOptions(snapshot.paymentOptions);
     setPrinterProfiles(snapshot.printerProfiles);
     setPrinterDrafts({
       receipt:
@@ -404,11 +481,73 @@ function App() {
     }
   }
 
+  function getNextCategoryDisplayOrder() {
+    return Math.max(0, ...categories.map((category) => category.displayOrder)) + 10;
+  }
+
+  function getDefaultPaymentMode() {
+    return activePaymentOptions[0]?.name ?? "cash";
+  }
+
+  function resetBillingDraft() {
+    setDraftLines([]);
+    setSelectedDraftLineId(null);
+    setQuantityEntry("0");
+    setQuantityEditorState(null);
+    setBillNotes("");
+    setPreviewCustomerName("");
+    setBillPreviewOpen(false);
+    setPreviewShouldPrint(false);
+    setReissueSource(null);
+    setBillingDocumentType("receipt");
+    setPaymentMode(getDefaultPaymentMode());
+    setSelectedCategoryFilter("all");
+    setItemSearch("");
+  }
+
+  function closeQuantityEditor() {
+    setSelectedDraftLineId(null);
+    setQuantityEntry("0");
+    setQuantityEditorState(null);
+  }
+
+  function openItemQuantityEditor(item: Item) {
+    const existingLine = draftLines.find(
+      (line) =>
+        line.itemId === item.id &&
+        line.unitPricePaise === item.unitPricePaise &&
+        line.gstRate === item.gstRate,
+    );
+
+    if (existingLine && reissueSource) {
+      openDraftLineQuantityEditor(existingLine);
+      return;
+    }
+
+    setSelectedDraftLineId(existingLine?.draftId ?? null);
+    setQuantityEntry("0");
+    setQuantityEditorState({
+      source: "item",
+      item,
+      existingDraftId: existingLine?.draftId ?? null,
+    });
+  }
+
+  function openDraftLineQuantityEditor(line: DraftLine) {
+    setSelectedDraftLineId(line.draftId);
+    setQuantityEntry(quantityMillisToString(line.quantityMillis));
+    setQuantityEditorState({
+      source: "line",
+      draftId: line.draftId,
+      initialQuantityMillis: line.quantityMillis,
+    });
+  }
+
   function resetCategoryForm() {
     setCategoryForm({
       id: null,
       name: "",
-      displayOrder: Math.max(10, categories.length * 10 + 10),
+      displayOrder: getNextCategoryDisplayOrder(),
       isActive: true,
     });
   }
@@ -426,48 +565,12 @@ function App() {
     });
   }
 
-  async function handleSaveShopProfile() {
-    if (!shopProfileForm.shopName.trim()) {
-      setToast({ kind: "error", message: "Shop name is required." });
-      return;
-    }
-    if (!shopProfileForm.receiptPrefix.trim()) {
-      setToast({ kind: "error", message: "Receipt prefix is required." });
-      return;
-    }
-    if (!shopProfileForm.invoicePrefix.trim()) {
-      setToast({ kind: "error", message: "Invoice prefix is required." });
-      return;
-    }
-
-    try {
-      await saveShopProfile(shopProfileForm);
-      setToast({ kind: "success", message: "Shop profile saved locally." });
-      await refreshSnapshot("Saving shop profile…");
-    } catch (error) {
-      setToast({
-        kind: "error",
-        message: getErrorMessage(error, "Shop profile could not be saved."),
-      });
-    }
-  }
-
-  async function handleSaveAdminSettings() {
-    if (!adminForm.adminName.trim()) {
-      setToast({ kind: "error", message: "Admin name is required." });
-      return;
-    }
-
-    try {
-      await saveAdminSettings(adminForm);
-      setToast({ kind: "success", message: "Admin settings updated." });
-      await refreshSnapshot("Saving admin settings…");
-    } catch (error) {
-      setToast({
-        kind: "error",
-        message: getErrorMessage(error, "Admin settings could not be updated."),
-      });
-    }
+  function resetPaymentOptionForm() {
+    setPaymentOptionForm({
+      id: null,
+      name: "",
+      isActive: true,
+    });
   }
 
   async function handleSaveCategory() {
@@ -610,6 +713,72 @@ function App() {
     }
   }
 
+  async function handleSavePaymentOption() {
+    const paymentName = normalizeName(paymentOptionForm.name);
+
+    if (!paymentName) {
+      setToast({ kind: "error", message: "Payment option name is required." });
+      return;
+    }
+
+    const duplicatePaymentOption = paymentOptions.find(
+      (option) =>
+        option.id !== paymentOptionForm.id &&
+        option.name.trim().toLowerCase() === paymentName.toLowerCase(),
+    );
+    if (duplicatePaymentOption) {
+      setToast({ kind: "error", message: `Payment option "${paymentName}" already exists.` });
+      return;
+    }
+
+    try {
+      await savePaymentOption({
+        ...paymentOptionForm,
+        name: paymentName,
+      });
+      setToast({ kind: "success", message: "Payment option saved." });
+      resetPaymentOptionForm();
+      await refreshSnapshot("Saving payment option…");
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: isUniqueConstraintError(error)
+          ? `Payment option "${paymentName}" already exists.`
+          : getErrorMessage(error, "Payment option could not be saved."),
+      });
+    }
+  }
+
+  async function handleTogglePaymentOption(paymentOption: PaymentOption) {
+    if (paymentOption.isActive && activePaymentOptions.length <= 1) {
+      setToast({ kind: "error", message: "Keep at least one payment option active." });
+      return;
+    }
+
+    const label = formatPaymentModeLabel(paymentOption.name);
+    const approved = await confirm(
+      `${paymentOption.isActive ? "Disable" : "Enable"} ${label}?`,
+      "Payment option status",
+    );
+    if (!approved) {
+      return;
+    }
+
+    try {
+      await setPaymentOptionActive(paymentOption.id, !paymentOption.isActive);
+      setToast({
+        kind: "success",
+        message: paymentOption.isActive ? "Payment option disabled." : "Payment option enabled.",
+      });
+      await refreshSnapshot("Updating payment options…");
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "Payment option status could not be updated."),
+      });
+    }
+  }
+
   async function handleSavePrinterProfile(profileType: PrinterProfileType) {
     if (!PRINTING_ENABLED) {
       return;
@@ -685,18 +854,29 @@ function App() {
 
   function handleQuantityKeypad(key: string) {
     if (key === "clear") {
-      setQuantityEntry("");
+      setQuantityEntry("0");
       return;
     }
 
     if (key === "backspace") {
-      setQuantityEntry((current) => current.slice(0, -1));
+      setQuantityEntry((current) => {
+        if (current.length <= 1) {
+          return "0";
+        }
+        return current.slice(0, -1);
+      });
       return;
     }
 
     setQuantityEntry((current) => {
+      if (key === "." && current === "0") {
+        return "0.";
+      }
       if (key === "." && current.includes(".")) {
         return current;
+      }
+      if (current === "0" && key !== ".") {
+        return key;
       }
       return `${current}${key}`;
     });
@@ -706,53 +886,9 @@ function App() {
     setQuantityEntry(value);
   }
 
-  function handleAddItemToDraft(item: Item) {
-    const quantityMillis = quantityStringToMillis(quantityEntry || "1") || 1000;
-    const existingLine = draftLines.find(
-      (line) =>
-        line.itemId === item.id &&
-        line.unitPricePaise === item.unitPricePaise &&
-        line.gstRate === item.gstRate,
-    );
-
-    if (existingLine) {
-      setDraftLines((current) =>
-        current.map((line) =>
-          line.draftId === existingLine.draftId
-            ? recalculateDraftLine(line, line.quantityMillis + quantityMillis)
-            : line,
-        ),
-      );
-      setSelectedDraftLineId(existingLine.draftId);
-    } else {
-      const draftId = Date.now() + item.id;
-      const newLine = recalculateDraftLine(
-        {
-          draftId,
-          itemId: item.id,
-          itemName: item.name,
-          categoryId: item.categoryId,
-          categoryName: item.categoryName,
-          unit: item.unit,
-          quantityMillis: 0,
-          unitPricePaise: item.unitPricePaise,
-          gstRate: item.gstRate,
-          lineSubtotalPaise: 0,
-          lineTaxPaise: 0,
-          lineTotalPaise: 0,
-        },
-        quantityMillis,
-      );
-      setDraftLines((current) => [...current, newLine]);
-      setSelectedDraftLineId(draftId);
-    }
-
-    setQuantityEntry("1");
-  }
-
-  function handleApplyQuantityToSelectedLine() {
-    if (!selectedDraftLine) {
-      setToast({ kind: "info", message: "Select a bill line before applying quantity." });
+  function handleApplyQuantitySelection() {
+    if (!quantityEditorState) {
+      setToast({ kind: "info", message: "Select an item before applying quantity." });
       return;
     }
 
@@ -762,28 +898,53 @@ function App() {
       return;
     }
 
+    if (quantityEditorState.source === "item") {
+      const { item, existingDraftId } = quantityEditorState;
+      if (existingDraftId) {
+        setDraftLines((current) =>
+          current.map((line) =>
+            line.draftId === existingDraftId
+              ? recalculateDraftLine(line, line.quantityMillis + quantityMillis)
+              : line,
+          ),
+        );
+      } else {
+        const draftId = Date.now() + item.id;
+        const newLine = recalculateDraftLine(
+          {
+            draftId,
+            itemId: item.id,
+            itemName: item.name,
+            categoryId: item.categoryId,
+            categoryName: item.categoryName,
+            unit: item.unit,
+            quantityMillis: 0,
+            unitPricePaise: item.unitPricePaise,
+            gstRate: item.gstRate,
+            lineSubtotalPaise: 0,
+            lineTaxPaise: 0,
+            lineTotalPaise: 0,
+          },
+          quantityMillis,
+        );
+        setDraftLines((current) => [...current, newLine]);
+      }
+      closeQuantityEditor();
+      return;
+    }
+
     setDraftLines((current) =>
       current.map((line) =>
-        line.draftId === selectedDraftLine.draftId
+        line.draftId === quantityEditorState.draftId
           ? recalculateDraftLine(line, quantityMillis)
           : line,
       ),
     );
+    closeQuantityEditor();
   }
 
-  async function handleDeleteSelectedLine() {
-    if (!selectedDraftLine) {
-      return;
-    }
-
-    const approved = await confirm(`Delete ${selectedDraftLine.itemName} from the draft bill?`, "Delete line");
-    if (!approved) {
-      return;
-    }
-
-    setDraftLines((current) => current.filter((line) => line.draftId !== selectedDraftLine.draftId));
-    setSelectedDraftLineId(null);
-    setQuantityEntry("1");
+  function handleCancelQuantityEditor() {
+    closeQuantityEditor();
   }
 
   async function handleClearDraft() {
@@ -796,11 +957,21 @@ function App() {
       return;
     }
 
-    setDraftLines([]);
-    setSelectedDraftLineId(null);
-    setQuantityEntry("1");
-    setBillNotes("");
-    setReissueSource(null);
+    resetBillingDraft();
+  }
+
+  function handleOpenBillPreview(shouldPrint: boolean) {
+    if (draftLines.length === 0) {
+      setToast({ kind: "error", message: "Add items before saving a bill." });
+      return;
+    }
+    if (!paymentMode.trim()) {
+      setToast({ kind: "error", message: "Select a payment option before saving a bill." });
+      return;
+    }
+
+    setPreviewShouldPrint(shouldPrint);
+    setBillPreviewOpen(true);
   }
 
   async function handleSaveSale(shouldPrint: boolean) {
@@ -816,6 +987,7 @@ function App() {
       const saleId = await completeSale({
         documentType: billingDocumentType,
         paymentMode,
+        customerName: previewCustomerName,
         notes: billNotes,
         lines: draftLines,
         reissueOfSaleId: reissueSource?.id ?? null,
@@ -830,13 +1002,8 @@ function App() {
 
       startTransition(() => {
         applySnapshot(snapshot);
-        setDraftLines([]);
-        setSelectedDraftLineId(null);
-        setQuantityEntry("1");
-        setBillNotes("");
-        setReissueSource(null);
-        setSalePreview(sale);
-        setActiveView("reports");
+        resetBillingDraft();
+        setActiveView("billing");
       });
 
       let printWarning = "";
@@ -889,6 +1056,23 @@ function App() {
     }
   }
 
+  async function handleOpenSalePreview(sale: SaleRegisterRow) {
+    try {
+      const details = await getSaleDetails(sale.id);
+      if (!details) {
+        setToast({ kind: "error", message: "Sale details could not be loaded." });
+        return;
+      }
+
+      setSalePreview(details);
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "The receipt preview could not be opened."),
+      });
+    }
+  }
+
   async function handleStartReissue(sale: SaleRegisterRow) {
     try {
       const details = await getSaleDetails(sale.id);
@@ -899,10 +1083,12 @@ function App() {
 
       setDraftLines(toDraftLinesFromSale(details));
       setSelectedDraftLineId(null);
-      setQuantityEntry("1");
+      setQuantityEntry("0");
+      setQuantityEditorState(null);
       setPaymentMode(details.paymentMode);
       setBillingDocumentType(details.documentType);
       setBillNotes(details.notes ?? "");
+      setPreviewCustomerName(details.customerName ?? "");
       setReissueSource(details);
       setActiveView("billing");
       setToast({
@@ -1130,32 +1316,19 @@ function App() {
               />
             </section>
 
-            <section className="mini-panel">
-              <PanelHeader title="Billing Mode" subtitle="Choose how this bill should be saved." />
-              <div className="segmented">
-                {(["receipt", "gst_invoice"] as DocumentType[]).map((documentType) => (
-                  <button
-                    key={documentType}
-                    type="button"
-                    className={billingDocumentType === documentType ? "selected" : ""}
-                    onClick={() => setBillingDocumentType(documentType)}
-                  >
-                    {DOCUMENT_TYPE_LABELS[documentType]}
-                  </button>
-                ))}
-              </div>
-              {reissueSource ? (
+            {reissueSource ? (
+              <section className="mini-panel">
                 <p className="helper-banner">
-                  Reissuing <strong>{reissueSource.billNumber}</strong>. Saving voids the old bill.
+                  Reissuing <strong>{reissueSource.billNumber}</strong>. Saving voids the old bill, and each line shows its original quantity for reference.
                 </p>
-              ) : null}
-            </section>
+              </section>
+            ) : null}
           </aside>
 
           <section className="workspace-panel">
             <PanelHeader
               title="Menu Items"
-              subtitle="Tap to add — quantity bar is below."
+              subtitle="Tap an item to open the quantity calculator."
               action={
                 <button type="button" className="ghost-button" onClick={() => setActiveView("admin")}>
                   Manage menu
@@ -1175,11 +1348,11 @@ function App() {
                     key={item.id}
                     type="button"
                     className="item-tile"
-                    onClick={() => handleAddItemToDraft(item)}
+                    onClick={() => openItemQuantityEditor(item)}
                   >
                     <span className="eyebrow">{item.categoryName}</span>
                     <strong>{item.name}</strong>
-                    <p>{item.unit} • {item.gstRate}% GST</p>
+                    <p>{item.unit} • {formatGstRate(item.gstRate)} GST</p>
                     <span className="item-price">{formatCurrencyFromPaise(item.unitPricePaise)}</span>
                   </button>
                 ))
@@ -1190,7 +1363,7 @@ function App() {
           <aside className="bill-panel">
           <PanelHeader
             title="Current Bill"
-            subtitle={`${draftLines.length} line${draftLines.length === 1 ? "" : "s"} · ${DOCUMENT_TYPE_LABELS[billingDocumentType]}`}
+            subtitle={`${draftLines.length} line${draftLines.length === 1 ? "" : "s"}`}
             action={
               <button type="button" className="ghost-button danger" onClick={() => void handleClearDraft()}>
                 Clear all
@@ -1201,44 +1374,54 @@ function App() {
           <div className="draft-lines">
             {draftLines.length === 0 ? (
               <div className="empty-state draft-empty-hint">
-                Tap menu items to add lines. Tap a line to select it — change qty on the bar below.
+                Tap menu items to choose quantity, or tap a bill line to edit it.
               </div>
             ) : (
-              draftLines.map((line) => (
-                <button
-                  key={line.draftId}
-                  type="button"
-                  className={`draft-line ${selectedDraftLineId === line.draftId ? "selected" : ""}`}
-                  onClick={() => {
-                    setSelectedDraftLineId(line.draftId);
-                    setQuantityEntry(quantityMillisToString(line.quantityMillis));
-                  }}
-                >
-                  <div className="draft-line-main">
-                    <strong>{line.itemName}</strong>
-                    <span className="draft-line-meta">
-                      {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {line.gstRate}% GST
-                    </span>
-                  </div>
-                  <span className="draft-line-total">{formatCurrencyFromPaise(line.lineTotalPaise)}</span>
-                </button>
-              ))
+              draftLines.map((line) => {
+                const originalLine = reissueSource ? findOriginalLineForDraft(line) : null;
+
+                return (
+                  <button
+                    key={line.draftId}
+                    type="button"
+                    className={`draft-line ${selectedDraftLineId === line.draftId ? "selected" : ""}`}
+                    onClick={() => openDraftLineQuantityEditor(line)}
+                  >
+                    <div className="draft-line-main">
+                      <strong>{line.itemName}</strong>
+                      <span className="draft-line-meta">
+                        {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST
+                      </span>
+                      {originalLine ? (
+                        <span className="draft-line-reference">
+                          Original {quantityMillisToDisplay(originalLine.quantityMillis, line.unit)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="draft-line-total">{formatCurrencyFromPaise(line.lineTotalPaise)}</span>
+                  </button>
+                );
+              })
             )}
           </div>
 
           <section className="bill-payment-block">
             <span className="field-label">Payment</span>
             <div className="segmented bill-payment-segmented">
-              {(["cash", "upi", "cheque"] as PaymentMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={paymentMode === mode ? "selected" : ""}
-                  onClick={() => setPaymentMode(mode)}
-                >
-                  {PAYMENT_MODE_LABELS[mode]}
-                </button>
-              ))}
+              {activePaymentOptions.length === 0 ? (
+                <div className="empty-state compact-empty">Add a payment option in Admin.</div>
+              ) : (
+                activePaymentOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={paymentMode === option.name ? "selected" : ""}
+                    onClick={() => setPaymentMode(option.name)}
+                  >
+                    {formatPaymentModeLabel(option.name)}
+                  </button>
+                ))
+              )}
             </div>
             <label className="field-label bill-notes-label" htmlFor="bill-notes">
               Note (optional)
@@ -1260,11 +1443,11 @@ function App() {
           </section>
 
           <div className="checkout-actions">
-            <button type="button" className="primary-button checkout-save" onClick={() => void handleSaveSale(false)}>
+            <button type="button" className="primary-button checkout-save" onClick={() => handleOpenBillPreview(false)}>
               Save Bill
             </button>
             {PRINTING_ENABLED ? (
-              <button type="button" className="secondary-button checkout-save" onClick={() => void handleSaveSale(true)}>
+              <button type="button" className="secondary-button checkout-save" onClick={() => handleOpenBillPreview(true)}>
                 Save & Print
               </button>
             ) : null}
@@ -1272,9 +1455,15 @@ function App() {
         </aside>
         </div>
 
-        <div className="billing-quantity-dock" role="region" aria-label="Quantity entry">
+        {quantityEditorState ? (
+        <div className="quantity-drawer-shell" role="presentation">
+        <div className="quantity-drawer-backdrop" />
+        <div className="billing-quantity-dock" role="dialog" aria-modal="true" aria-label="Quantity entry">
           <div className="quantity-dock-left">
-            <span className="field-label">Quantity</span>
+            <div className="quantity-dock-heading">
+              <span className="field-label">Quantity Calculator</span>
+              <strong className="quantity-dock-item-name">{quantityEditorItemName}</strong>
+            </div>
             <div className="quantity-display quantity-display-dock" aria-live="polite">
               {quantityEntry || "0"}
             </div>
@@ -1292,14 +1481,22 @@ function App() {
               </button>
             </div>
             <p className="quantity-dock-hint">
-              {selectedDraftLine ? (
+              {quantityEditorState.source === "item" ? (
                 <>
-                  Editing <strong>{selectedDraftLine.itemName}</strong> — tap Apply quantity
+                  Enter quantity for <strong>{quantityEditorItemName}</strong>, then apply it to the bill.
                 </>
               ) : (
-                <>Select a line on the right to edit qty, or set qty before tapping items.</>
+                <>
+                  Update quantity for <strong>{quantityEditorItemName}</strong>, then apply it to the selected line.
+                </>
               )}
             </p>
+            {quantityEditorOriginalLine ? (
+              <div className="quantity-reference-card">
+                <span>Original Receipt Qty</span>
+                <strong>{quantityMillisToDisplay(quantityEditorOriginalLine.quantityMillis, quantityEditorOriginalLine.unit)}</strong>
+              </div>
+            ) : null}
           </div>
 
           <div className="quantity-dock-keypad">
@@ -1319,129 +1516,92 @@ function App() {
           </div>
 
           <div className="quantity-dock-actions">
-            <button type="button" className="primary-button dock-apply-btn" onClick={handleApplyQuantityToSelectedLine}>
-              Apply quantity
+            <button type="button" className="secondary-button dock-action-btn" onClick={handleCancelQuantityEditor}>
+              Cancel
             </button>
-            <button type="button" className="ghost-button danger dock-remove-btn" onClick={() => void handleDeleteSelectedLine()}>
-              Remove line
+            <button type="button" className="primary-button dock-apply-btn" onClick={handleApplyQuantitySelection}>
+              Apply Selected
             </button>
           </div>
         </div>
+        </div>
+        ) : null}
+        {billPreviewOpen ? renderBillPreviewModal() : null}
       </section>
+    );
+  }
+
+  function renderBillPreviewModal() {
+    return (
+      <div className="modal-backdrop">
+        <section className="modal-sheet bill-preview-modal" role="dialog" aria-modal="true" aria-labelledby="bill-preview-title">
+          <span className="eyebrow">Review before saving</span>
+          <h2 id="bill-preview-title">Receipt Preview</h2>
+          <div className="receipt-preview-meta">
+            <div>
+              <span>Document</span>
+              <strong>{DOCUMENT_TYPE_LABELS[billingDocumentType]}</strong>
+            </div>
+            <div>
+              <span>Payment</span>
+              <strong>{formatPaymentModeLabel(paymentMode)}</strong>
+            </div>
+          </div>
+
+          <LabeledField label="Customer Name (optional)">
+            <input
+              className="touch-input"
+              value={previewCustomerName}
+              onChange={(event) => setPreviewCustomerName(event.currentTarget.value)}
+              placeholder="Customer name"
+            />
+          </LabeledField>
+
+          <div className="receipt-preview-lines">
+            {draftLines.map((line, index) => (
+              <div key={line.draftId} className="receipt-preview-line">
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{line.itemName}</strong>
+                  <p>
+                    {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST
+                  </p>
+                </div>
+                <strong>{formatCurrencyFromPaise(line.lineTotalPaise)}</strong>
+              </div>
+            ))}
+          </div>
+
+          <section className="totals-panel preview-totals">
+            <div><span>Taxable</span><strong>{formatCurrencyFromPaise(billingTotals.subtotalPaise)}</strong></div>
+            <div><span>GST</span><strong>{formatCurrencyFromPaise(billingTotals.taxPaise)}</strong></div>
+            <div><span>Grand Total</span><strong>{formatCurrencyFromPaise(billingTotals.grandTotalPaise)}</strong></div>
+          </section>
+
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                setBillPreviewOpen(false);
+                void handleSaveSale(previewShouldPrint);
+              }}
+            >
+              Done
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setBillPreviewOpen(false)}>
+              Edit
+            </button>
+          </div>
+        </section>
+      </div>
     );
   }
 
   function renderAdminView() {
     return (
       <section className="view-stack admin-layout">
-        <div className="two-column admin-forms-row">
-          <section className="panel">
-            <PanelHeader title="Shop Profile" subtitle="Used on receipts and GST invoices." />
-            <div className="form-grid">
-              <LabeledField label="Shop Name">
-                <input
-                  className="touch-input"
-                  value={shopProfileForm.shopName}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, shopName: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="Phone">
-                <input
-                  className="touch-input"
-                  value={shopProfileForm.phone}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, phone: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="GSTIN">
-                <input
-                  className="touch-input"
-                  value={shopProfileForm.gstin}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, gstin: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="Receipt Prefix">
-                <input
-                  className="touch-input"
-                  value={shopProfileForm.receiptPrefix}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, receiptPrefix: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="Invoice Prefix">
-                <input
-                  className="touch-input"
-                  value={shopProfileForm.invoicePrefix}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, invoicePrefix: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="Address" wide>
-                <textarea
-                  className="touch-textarea tall"
-                  value={shopProfileForm.address}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, address: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="Footer Note" wide>
-                <textarea
-                  className="touch-textarea tall"
-                  value={shopProfileForm.footerNote}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setShopProfileForm((current) => ({ ...current, footerNote: value }));
-                  }}
-                />
-              </LabeledField>
-            </div>
-            <div className="action-row">
-              <button type="button" className="primary-button" onClick={() => void handleSaveShopProfile()}>
-                Save Shop Profile
-              </button>
-            </div>
-          </section>
-
-          <section className="panel">
-            <PanelHeader title="Admin Access" subtitle="Change the local admin name." />
-            <div className="form-grid">
-              <LabeledField label="Admin Name">
-                <input
-                  className="touch-input"
-                  value={adminForm.adminName}
-                  onChange={(event) => {
-                    const value = event.currentTarget.value;
-                    setAdminForm((current) => ({ ...current, adminName: value }));
-                  }}
-                />
-              </LabeledField>
-              <LabeledField label="Last Backup">
-                <input className="touch-input" value={adminSettingsState.lastBackupAt ? formatDateTime(adminSettingsState.lastBackupAt) : "No backup yet"} disabled />
-              </LabeledField>
-            </div>
-            <div className="action-row">
-              <button type="button" className="primary-button" onClick={() => void handleSaveAdminSettings()}>
-                Save Admin Settings
-              </button>
-            </div>
-          </section>
-        </div>
-
-        <div className="catalog-split">
+        <div className="admin-management-grid">
           <section className="panel flex-fill">
             <PanelHeader title="Categories" subtitle="Add and organize the menu groups used at the counter." />
             <div className="form-grid compact">
@@ -1455,18 +1615,12 @@ function App() {
                   }}
                 />
               </LabeledField>
-              <LabeledField label="Display Order">
+              <LabeledField label="Category Search">
                 <input
                   className="touch-input"
-                  inputMode="numeric"
-                  value={`${categoryForm.displayOrder}`}
-                  onChange={(event) => {
-                    const value = Number(event.currentTarget.value) || 0;
-                    setCategoryForm((current) => ({
-                      ...current,
-                      displayOrder: value,
-                    }));
-                  }}
+                  value={adminCategorySearch}
+                  onChange={(event) => setAdminCategorySearch(event.currentTarget.value)}
+                  placeholder="Search categories"
                 />
               </LabeledField>
             </div>
@@ -1496,20 +1650,23 @@ function App() {
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>#</th>
                     <th>Name</th>
-                    <th>Order</th>
                     <th>Status</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {categories.length === 0 ? (
-                    <EmptyTableRow columns={4} message="No categories yet." />
+                  {visibleAdminCategories.length === 0 ? (
+                    <EmptyTableRow
+                      columns={4}
+                      message={categories.length === 0 ? "No categories yet." : "No categories match search."}
+                    />
                   ) : (
-                    categories.map((category) => (
+                    visibleAdminCategories.map((category, index) => (
                       <tr key={category.id}>
+                        <td>{index + 1}</td>
                         <td>{category.name}</td>
-                        <td>{category.displayOrder}</td>
                         <td>{category.isActive ? "Active" : "Disabled"}</td>
                         <td className="table-actions">
                           <button
@@ -1543,6 +1700,17 @@ function App() {
           </section>
 
           <section className="panel flex-fill">
+            <PanelHeader title="Items" subtitle="Add menu items with their GST rate and inclusive price." />
+            <div className="admin-search-row">
+              <LabeledField label="Item Search">
+                <input
+                  className="touch-input"
+                  value={adminItemSearch}
+                  onChange={(event) => setAdminItemSearch(event.currentTarget.value)}
+                  placeholder="Search items"
+                />
+              </LabeledField>
+            </div>
             <div className="form-grid compact">
               <LabeledField label="Category">
                 <select
@@ -1621,7 +1789,7 @@ function App() {
                 >
                   {GST_OPTIONS.map((gstRate) => (
                     <option key={gstRate} value={gstRate}>
-                      {gstRate}%
+                      {formatGstRate(gstRate)}
                     </option>
                   ))}
                 </select>
@@ -1653,6 +1821,7 @@ function App() {
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>#</th>
                     <th>Item</th>
                     <th>Category</th>
                     <th>Rate</th>
@@ -1661,18 +1830,19 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.length === 0 ? (
-                    <EmptyTableRow columns={5} message="No items yet." />
+                  {visibleAdminItems.length === 0 ? (
+                    <EmptyTableRow columns={6} message={items.length === 0 ? "No items yet." : "No items match search."} />
                   ) : (
-                    items.map((item) => (
+                    visibleAdminItems.map((item, index) => (
                       <tr key={item.id}>
+                        <td>{index + 1}</td>
                         <td>
                           <strong>{item.name}</strong>
-                          <div className="table-note">{item.unit}</div>
+                          <div className="table-note">{item.unit} · {item.isActive ? "Active" : "Disabled"}</div>
                         </td>
                         <td>{item.categoryName}</td>
                         <td>{formatCurrencyFromPaise(item.unitPricePaise)}</td>
-                        <td>{item.gstRate}%</td>
+                        <td>{formatGstRate(item.gstRate)}</td>
                         <td className="table-actions">
                           <button
                             type="button"
@@ -1707,6 +1877,92 @@ function App() {
               </table>
             </div>
           </section>
+
+          <section className="panel flex-fill">
+            <PanelHeader title="Payment Options" subtitle="Choose what appears on the receipt screen." />
+            <div className="form-grid compact single-column">
+              <LabeledField label="Payment Name">
+                <input
+                  className="touch-input"
+                  value={paymentOptionForm.name}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setPaymentOptionForm((current) => ({ ...current, name: value }));
+                  }}
+                  placeholder="e.g. Card"
+                />
+              </LabeledField>
+            </div>
+            <div className="toggle-row">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={paymentOptionForm.isActive}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked;
+                    setPaymentOptionForm((current) => ({ ...current, isActive: checked }));
+                  }}
+                />
+                Active
+              </label>
+            </div>
+            <div className="action-row">
+              <button type="button" className="primary-button" onClick={() => void handleSavePaymentOption()}>
+                {paymentOptionForm.id ? "Update Payment" : "Add Payment"}
+              </button>
+              <button type="button" className="ghost-button" onClick={resetPaymentOptionForm}>
+                Reset
+              </button>
+            </div>
+
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paymentOptions.length === 0 ? (
+                    <EmptyTableRow columns={4} message="No payment options yet." />
+                  ) : (
+                    paymentOptions.map((option, index) => (
+                      <tr key={option.id}>
+                        <td>{index + 1}</td>
+                        <td>{formatPaymentModeLabel(option.name)}</td>
+                        <td>{option.isActive ? "Active" : "Disabled"}</td>
+                        <td className="table-actions">
+                          <button
+                            type="button"
+                            className="ghost-button small"
+                            onClick={() =>
+                              setPaymentOptionForm({
+                                id: option.id,
+                                name: option.name,
+                                isActive: option.isActive,
+                              })
+                            }
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button small danger"
+                            onClick={() => void handleTogglePaymentOption(option)}
+                          >
+                            {option.isActive ? "Disable" : "Enable"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </section>
     );
@@ -1717,31 +1973,65 @@ function App() {
       <section className="reports-layout">
         {salePreview ? (
           <div className="sale-preview-banner">
-            <div>
-              <span className="eyebrow">Last saved</span>
+            <div className="sale-preview-header">
               <div>
-                <strong>{salePreview.billNumber}</strong>
-                {" · "}
-                {formatCurrencyFromPaise(salePreview.grandTotalPaise)}
-                {" · "}
-                {PAYMENT_MODE_LABELS[salePreview.paymentMode]}
+                <span className="eyebrow">Receipt Preview</span>
+                <div>
+                  <strong>{salePreview.billNumber}</strong>
+                  {" · "}
+                  {formatCurrencyFromPaise(salePreview.grandTotalPaise)}
+                  {" · "}
+                  {formatPaymentModeLabel(salePreview.paymentMode)}
+                </div>
+              </div>
+              <div className="banner-actions">
+                {PRINTING_ENABLED ? (
+                  <>
+                    <button type="button" className="secondary-button" onClick={() => void handlePreviewSaleDocument(salePreview, "receipt")}>
+                      Print Receipt
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void handlePreviewSaleDocument(salePreview, "gst_invoice")}>
+                      Print GST
+                    </button>
+                  </>
+                ) : null}
+                <button type="button" className="ghost-button" onClick={() => setSalePreview(null)}>
+                  Close
+                </button>
               </div>
             </div>
-            <div className="banner-actions">
-              {PRINTING_ENABLED ? (
-                <>
-                  <button type="button" className="secondary-button" onClick={() => void handlePreviewSaleDocument(salePreview, "receipt")}>
-                    Print Receipt
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => void handlePreviewSaleDocument(salePreview, "gst_invoice")}>
-                    Print GST
-                  </button>
-                </>
-              ) : null}
-              <button type="button" className="ghost-button" onClick={() => setSalePreview(null)}>
-                Dismiss
-              </button>
+
+            <div className="receipt-preview-meta sale-preview-meta-grid">
+              <div>
+                <span>Customer</span>
+                <strong>{salePreview.customerName || "Walk-in Customer"}</strong>
+              </div>
+              <div>
+                <span>Time</span>
+                <strong>{formatDateTime(salePreview.saleTimestamp)}</strong>
+              </div>
             </div>
+
+            <div className="receipt-preview-lines">
+              {salePreview.lines.map((line, index) => (
+                <div key={line.id} className="receipt-preview-line">
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{line.itemName}</strong>
+                    <p>
+                      {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST
+                    </p>
+                  </div>
+                  <strong>{formatCurrencyFromPaise(line.lineTotalPaise)}</strong>
+                </div>
+              ))}
+            </div>
+
+            <section className="totals-panel preview-totals">
+              <div><span>Taxable</span><strong>{formatCurrencyFromPaise(salePreview.subtotalPaise)}</strong></div>
+              <div><span>GST</span><strong>{formatCurrencyFromPaise(salePreview.taxTotalPaise)}</strong></div>
+              <div><span>Grand Total</span><strong>{formatCurrencyFromPaise(salePreview.grandTotalPaise)}</strong></div>
+            </section>
           </div>
         ) : null}
 
@@ -1798,12 +2088,12 @@ function App() {
             value={formatCurrencyFromPaise(filteredReportSales.reduce((sum, sale) => sum + sale.taxTotalPaise, 0))}
           />
           <MetricTile label="Bills" value={`${filteredReportSales.length}`} />
-          <MetricTile label="UPI" value={`${filteredReportSales.filter((sale) => sale.paymentMode === "upi").length}`} />
+          <MetricTile label="UPI" value={`${filteredReportSales.filter((sale) => sale.paymentMode.toLowerCase() === "upi").length}`} />
         </div>
 
         <div className="reports-main-split">
           <section className="panel flex-fill">
-            <PanelHeader title="Sale register" subtitle="Void / reissue from here." />
+            <PanelHeader title="Sale register" subtitle="Preview receipts or fix a bill from here." />
             <div className="table-shell">
               <table className="data-table">
                 <thead>
@@ -1827,7 +2117,7 @@ function App() {
                           <div className="table-note">{DOCUMENT_TYPE_LABELS[sale.documentType]}</div>
                         </td>
                         <td>{formatDateTime(sale.saleTimestamp)}</td>
-                        <td>{PAYMENT_MODE_LABELS[sale.paymentMode]}</td>
+                        <td>{formatPaymentModeLabel(sale.paymentMode)}</td>
                         <td>{formatCurrencyFromPaise(sale.grandTotalPaise)}</td>
                         <td>
                           <span className={`status-pill status-${sale.status}`}>{sale.status}</span>
@@ -1836,16 +2126,9 @@ function App() {
                           <button
                             type="button"
                             className="ghost-button small"
-                            onClick={() => void handlePreviewSaleDocument(sale, "receipt")}
+                            onClick={() => void handleOpenSalePreview(sale)}
                           >
                             Rcpt
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-button small"
-                            onClick={() => void handlePreviewSaleDocument(sale, "gst_invoice")}
-                          >
-                            GST
                           </button>
                           {sale.status !== "voided" ? (
                             <button
@@ -1891,7 +2174,7 @@ function App() {
                     ) : (
                       gstSummary.map((row) => (
                         <tr key={row.gstRate}>
-                          <td>{row.gstRate}%</td>
+                          <td>{formatGstRate(row.gstRate)}</td>
                           <td>{formatCurrencyFromPaise(row.taxablePaise)}</td>
                           <td>{formatCurrencyFromPaise(row.taxPaise)}</td>
                           <td>{formatCurrencyFromPaise(row.grossPaise)}</td>
@@ -1927,7 +2210,7 @@ function App() {
                     ) : (
                       paymentSummary.map((row) => (
                         <tr key={row.paymentMode}>
-                          <td>{PAYMENT_MODE_LABELS[row.paymentMode]}</td>
+                          <td>{formatPaymentModeLabel(row.paymentMode)}</td>
                           <td>{row.saleCount}</td>
                           <td>{formatCurrencyFromPaise(row.totalPaise)}</td>
                         </tr>

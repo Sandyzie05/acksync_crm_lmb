@@ -10,13 +10,7 @@ export const UNIT_OPTIONS = [
   "custom",
 ] as const;
 
-export const GST_OPTIONS = [5, 18] as const;
-
-export const PAYMENT_MODE_LABELS = {
-  cash: "Cash",
-  upi: "UPI",
-  cheque: "Cheque",
-} as const;
+export const GST_OPTIONS = [0, 5, 18] as const;
 
 export const DOCUMENT_TYPE_LABELS = {
   receipt: "Receipt",
@@ -44,6 +38,30 @@ export function formatDateTime(value: string): string {
   }).format(date);
 }
 
+export function formatGstRate(gstRate: number): string {
+  return gstRate === 0 ? "NA" : `${gstRate}%`;
+}
+
+export function formatPaymentModeLabel(paymentMode: string): string {
+  const normalized = paymentMode.trim().toLowerCase();
+
+  if (normalized === "upi") {
+    return "UPI";
+  }
+  if (normalized === "cash") {
+    return "Cash";
+  }
+  if (normalized === "cheque") {
+    return "Cheque";
+  }
+
+  return paymentMode
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
 export function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -59,8 +77,11 @@ export function quantityStringToMillis(rawValue: string): number {
 
 export function quantityMillisToString(quantityMillis: number): string {
   const raw = quantityMillis / 1000;
-  const rounded = raw % 1 === 0 ? raw.toFixed(0) : raw.toFixed(3);
-  return rounded.replace(/\.?0+$/, "");
+  if (Number.isInteger(raw)) {
+    return raw.toFixed(0);
+  }
+
+  return raw.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 export function quantityMillisToDisplay(quantityMillis: number, unit: string): string {

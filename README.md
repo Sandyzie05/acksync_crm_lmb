@@ -5,9 +5,9 @@ Offline touch-first POS and reporting app for a sweet shop, built with Tauri 2, 
 ## What is included
 
 - Touch billing flow with large category and item tiles
-- Receipt and GST invoice modes
+- Receipt generation with item-level GST rates, including `NA`
 - Category and item management with GST-aware inclusive pricing
-- Payment modes for `cash`, `upi`, and `cheque`
+- Admin-managed payment options, seeded with `cash` and `upi`
 - Sale register, GST summary, payment summary, and item-wise summary
 - Excel export for reporting
 - Local database backup
@@ -76,7 +76,7 @@ Recommended test flow on your Mac:
 
 1. Run `npm run tauri dev`
 2. Create a few categories and items
-3. Generate sample receipt and GST bills with `cash`, `upi`, and `cheque`
+3. Generate sample receipts with `cash`, `upi`, and any Admin-added payment option
 4. Reissue one completed bill to verify the void/reissue audit flow
 5. Export all report types to Excel
 6. Restart the app and verify the data is still present

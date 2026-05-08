@@ -9,6 +9,7 @@ import type {
   GstSummaryRow,
   Item,
   ItemwiseSummaryRow,
+  PaymentOption,
   PaymentSummaryRow,
   PrinterProfile,
   PrinterProfileType,
@@ -70,6 +71,14 @@ interface SqlPrinterProfileRow {
   updated_at: string;
 }
 
+interface SqlPaymentOptionRow {
+  id: number;
+  name: string;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
 interface SqlAuditRow {
   id: number;
   action: string;
@@ -84,7 +93,8 @@ interface SqlSaleRow {
   bill_number: string;
   document_type: "receipt" | "gst_invoice";
   sale_timestamp: string;
-  payment_mode: "cash" | "upi" | "cheque";
+  customer_name: string | null;
+  payment_mode: string;
   subtotal_paise: number;
   tax_total_paise: number;
   grand_total_paise: number;
@@ -165,6 +175,16 @@ function mapPrinterProfile(row: SqlPrinterProfileRow): PrinterProfile {
   };
 }
 
+function mapPaymentOption(row: SqlPaymentOptionRow): PaymentOption {
+  return {
+    id: row.id,
+    name: row.name,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function mapAuditEntry(row: SqlAuditRow): AuditEntry {
   return {
     id: row.id,
@@ -182,6 +202,7 @@ function mapSaleRow(row: SqlSaleRow): SaleRegisterRow {
     billNumber: row.bill_number,
     documentType: row.document_type,
     saleTimestamp: row.sale_timestamp,
+    customerName: row.customer_name,
     paymentMode: row.payment_mode,
     subtotalPaise: row.subtotal_paise,
     taxTotalPaise: row.tax_total_paise,
@@ -261,11 +282,19 @@ async function initialiseDatabase(db: Database) {
       printer_name TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
+    `CREATE TABLE IF NOT EXISTS payment_options (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE TABLE IF NOT EXISTS sales (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       bill_number TEXT NOT NULL UNIQUE,
       document_type TEXT NOT NULL,
       sale_timestamp TEXT NOT NULL,
+      customer_name TEXT,
       payment_mode TEXT NOT NULL,
       subtotal_paise INTEGER NOT NULL,
       tax_total_paise INTEGER NOT NULL,
@@ -307,6 +336,11 @@ async function initialiseDatabase(db: Database) {
     await db.execute(statement);
   }
 
+  const saleColumns = await db.select<{ name: string }[]>(`PRAGMA table_info(sales)`);
+  if (!saleColumns.some((column) => column.name === "customer_name")) {
+    await db.execute(`ALTER TABLE sales ADD COLUMN customer_name TEXT`);
+  }
+
   await db.execute(
     `INSERT OR IGNORE INTO shop_profile (
       id, shop_name, address, gstin, phone, receipt_prefix, invoice_prefix, next_receipt_number, next_invoice_number, footer_note
@@ -318,6 +352,9 @@ async function initialiseDatabase(db: Database) {
   );
 
   await db.execute(`INSERT OR IGNORE INTO admin_settings (id, admin_name, last_backup_at) VALUES (1, 'Admin', NULL)`);
+
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('cash', 1)`);
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('upi', 1)`);
 }
 
 async function getDb() {
@@ -657,6 +694,92 @@ export async function clearPrinterProfile(profileType: PrinterProfileType) {
   await recordAudit(db, "printer_profile_cleared", "printer_profile", profileType, "Printer profile removed.");
 }
 
+export async function listPaymentOptions(includeInactive = true) {
+  const db = await getDb();
+  const filter = includeInactive ? "" : "WHERE is_active = 1";
+  const rows = await db.select<SqlPaymentOptionRow[]>(
+    `SELECT id, name, is_active, created_at, updated_at
+     FROM payment_options
+     ${filter}
+     ORDER BY is_active DESC, lower(name) ASC`,
+  );
+
+  return rows.map(mapPaymentOption);
+}
+
+export async function savePaymentOption(input: {
+  id?: number | null;
+  name: string;
+  isActive: boolean;
+}) {
+  const db = await getDb();
+  const normalizedName = input.name.trim().replace(/\s+/g, " ");
+
+  if (!normalizedName) {
+    throw new Error("Payment option name is required.");
+  }
+
+  const duplicateRows = await db.select<{ id: number }[]>(
+    `SELECT id
+     FROM payment_options
+     WHERE lower(trim(name)) = lower(trim($1))
+       AND ($2 IS NULL OR id != $2)
+     LIMIT 1`,
+    [normalizedName, input.id ?? null],
+  );
+  if (duplicateRows.length > 0) {
+    throw new Error(`Payment option "${normalizedName}" already exists.`);
+  }
+
+  if (input.id) {
+    await db.execute(
+      `UPDATE payment_options
+       SET name = $1, is_active = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [normalizedName, input.isActive ? 1 : 0, input.id],
+    );
+    await recordAudit(
+      db,
+      "payment_option_updated",
+      "payment_option",
+      input.id,
+      `Payment option "${normalizedName}" updated.`,
+    );
+    return input.id;
+  }
+
+  const result = await db.execute(
+    `INSERT INTO payment_options (name, is_active)
+     VALUES ($1, $2)`,
+    [normalizedName, input.isActive ? 1 : 0],
+  );
+
+  await recordAudit(
+    db,
+    "payment_option_created",
+    "payment_option",
+    result.lastInsertId ?? null,
+    `Payment option "${normalizedName}" created.`,
+  );
+
+  return result.lastInsertId ?? null;
+}
+
+export async function setPaymentOptionActive(paymentOptionId: number, isActive: boolean) {
+  const db = await getDb();
+  await db.execute(
+    `UPDATE payment_options SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+    [isActive ? 1 : 0, paymentOptionId],
+  );
+  await recordAudit(
+    db,
+    isActive ? "payment_option_enabled" : "payment_option_disabled",
+    "payment_option",
+    paymentOptionId,
+    isActive ? "Payment option enabled." : "Payment option disabled.",
+  );
+}
+
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const db = await getDb();
   const [salesRow] = await db.select<
@@ -711,6 +834,7 @@ export async function listSales(dateFrom?: string, dateTo?: string) {
        bill_number,
        document_type,
        sale_timestamp,
+       customer_name,
        payment_mode,
        subtotal_paise,
        tax_total_paise,
@@ -736,6 +860,7 @@ export async function listRecentSales(limit = 8) {
        bill_number,
        document_type,
        sale_timestamp,
+       customer_name,
        payment_mode,
        subtotal_paise,
        tax_total_paise,
@@ -761,6 +886,7 @@ export async function getSaleDetails(saleId: number): Promise<SaleDetails | null
        bill_number,
        document_type,
        sale_timestamp,
+       customer_name,
        payment_mode,
        subtotal_paise,
        tax_total_paise,
@@ -809,6 +935,9 @@ export async function completeSale(input: SaleDraftInput) {
 
   if (input.lines.length === 0) {
     throw new Error("Add at least one item before saving the bill.");
+  }
+  if (!input.paymentMode.trim()) {
+    throw new Error("Select a payment option before saving the bill.");
   }
 
   const subtotalPaise = input.lines.reduce((sum, line) => sum + line.lineSubtotalPaise, 0);
@@ -865,13 +994,14 @@ export async function completeSale(input: SaleDraftInput) {
 
   const insertSaleResult = await db.execute(
     `INSERT INTO sales (
-       bill_number, document_type, sale_timestamp, payment_mode,
+       bill_number, document_type, sale_timestamp, customer_name, payment_mode,
        subtotal_paise, tax_total_paise, grand_total_paise, status, notes, reissue_of_sale_id
-     ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4, $5, $6, $7, $8, $9)`,
+     ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       billNumber,
       input.documentType,
-      input.paymentMode,
+      input.customerName.trim() || null,
+      input.paymentMode.trim(),
       subtotalPaise,
       taxTotalPaise,
       grandTotalPaise,
@@ -1040,6 +1170,7 @@ export async function loadAppSnapshot(): Promise<AppSnapshot> {
     adminSettings,
     categories,
     items,
+    paymentOptions,
     printerProfiles,
     dashboardMetrics,
     recentSales,
@@ -1049,6 +1180,7 @@ export async function loadAppSnapshot(): Promise<AppSnapshot> {
     loadAdminSettings(),
     listCategories(true),
     listItems(true),
+    listPaymentOptions(true),
     PRINTING_ENABLED ? listPrinterProfiles() : Promise.resolve([]),
     getDashboardMetrics(),
     listRecentSales(8),
@@ -1060,6 +1192,7 @@ export async function loadAppSnapshot(): Promise<AppSnapshot> {
     adminSettings,
     categories,
     items,
+    paymentOptions,
     printerProfiles,
     dashboardMetrics,
     recentSales,

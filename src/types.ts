@@ -1,6 +1,6 @@
 export type AppView = "home" | "billing" | "admin" | "reports" | "settings";
 
-export type PaymentMode = "cash" | "upi" | "cheque";
+export type PaymentMode = string;
 export type DocumentType = "receipt" | "gst_invoice";
 export type SaleStatus = "completed" | "voided" | "reissued";
 export type PrinterProfileType = "receipt" | "gst_invoice";
@@ -51,6 +51,14 @@ export interface PrinterProfile {
   updatedAt: string;
 }
 
+export interface PaymentOption {
+  id: number;
+  name: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AuditEntry {
   id: number;
   action: string;
@@ -65,6 +73,7 @@ export interface SaleRegisterRow {
   billNumber: string;
   documentType: DocumentType;
   saleTimestamp: string;
+  customerName: string | null;
   paymentMode: PaymentMode;
   subtotalPaise: number;
   taxTotalPaise: number;
@@ -142,6 +151,7 @@ export interface ItemwiseSummaryRow {
 export interface SaleDraftInput {
   documentType: DocumentType;
   paymentMode: PaymentMode;
+  customerName: string;
   notes: string;
   lines: DraftLine[];
   reissueOfSaleId?: number | null;
@@ -152,6 +162,7 @@ export interface AppSnapshot {
   adminSettings: AdminSettings;
   categories: Category[];
   items: Item[];
+  paymentOptions: PaymentOption[];
   printerProfiles: PrinterProfile[];
   dashboardMetrics: DashboardMetrics;
   recentSales: SaleRegisterRow[];

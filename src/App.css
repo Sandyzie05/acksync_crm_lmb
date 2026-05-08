@@ -415,6 +415,15 @@ select:focus-visible {
   overflow: hidden;
 }
 
+.admin-management-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(17rem, 0.9fr) minmax(22rem, 1.35fr) minmax(16rem, 0.85fr);
+  gap: 0.55rem;
+  overflow: hidden;
+}
+
 .reports-layout {
   flex: 1;
   min-height: 0;
@@ -547,6 +556,13 @@ select:focus-visible {
   text-align: center;
 }
 
+.compact-empty {
+  min-height: 2.75rem;
+  padding: 0.7rem;
+  display: grid;
+  place-items: center;
+}
+
 .timeline {
   display: flex;
   flex-direction: column;
@@ -597,49 +613,79 @@ select:focus-visible {
 }
 
 .billing-quantity-dock {
-  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  width: min(72rem, calc(100vw - 2.5rem));
   display: grid;
-  grid-template-columns: minmax(11rem, 13rem) minmax(0, 1fr) minmax(10rem, 11.5rem);
-  gap: 0.55rem;
+  grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr) minmax(12rem, 14rem);
+  gap: 0.85rem;
   align-items: stretch;
-  padding: 0.55rem 0.65rem;
-  border-radius: 1.25rem;
-  background: rgba(255, 250, 243, 0.92);
+  padding: 1rem 1.1rem;
+  border-radius: 1.6rem;
+  background: rgba(255, 250, 243, 0.98);
   border: 1px solid rgba(122, 73, 36, 0.12);
-  box-shadow: 0 12px 32px rgba(110, 64, 24, 0.06);
+  box-shadow: 0 1.8rem 3.8rem rgba(70, 38, 16, 0.22);
+}
+
+.quantity-drawer-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.quantity-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(53, 29, 16, 0.34);
+  backdrop-filter: blur(8px);
 }
 
 .quantity-dock-left {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.55rem;
   justify-content: center;
   min-width: 0;
 }
 
+.quantity-dock-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.quantity-dock-item-name {
+  color: #542915;
+  font: 700 1.45rem/1.1 "Georgia", serif;
+}
+
 .quantity-display-dock {
   margin: 0;
-  padding: 0.55rem 0.65rem;
-  font: 700 1.6rem/1 "Georgia", serif;
+  padding: 0.95rem 1rem;
+  font: 700 2.4rem/1 "Georgia", serif;
   border-radius: 1rem;
 }
 
 .shortcut-row-dock {
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0.35rem;
+  gap: 0.55rem;
   margin-bottom: 0;
 }
 
 .touch-chip {
-  min-height: 2.6rem !important;
-  padding: 0.5rem 0.35rem !important;
-  font-size: 0.82rem !important;
+  min-height: 3.35rem !important;
+  padding: 0.75rem 0.45rem !important;
+  font-size: 1rem !important;
   font-weight: 700;
 }
 
 .quantity-dock-hint {
   margin: 0;
-  font-size: 0.72rem;
+  font-size: 0.9rem;
   color: #866043;
   line-height: 1.3;
 }
@@ -653,33 +699,35 @@ select:focus-visible {
 
 .keypad-grid-dock {
   width: 100%;
-  max-width: 15rem;
-  gap: 0.45rem;
+  max-width: 19rem;
+  gap: 0.65rem;
 }
 
 .touch-key {
-  min-height: 2.75rem !important;
-  padding: 0.55rem !important;
-  font-size: 1.1rem !important;
+  min-height: 4rem !important;
+  padding: 0.75rem !important;
+  font-size: 1.45rem !important;
   font-weight: 600;
-  border-radius: 0.85rem !important;
+  border-radius: 1rem !important;
 }
 
 .quantity-dock-actions {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.7rem;
   justify-content: center;
 }
 
 .dock-apply-btn {
-  min-height: 3.1rem;
-  font-size: 1rem;
+  min-height: 4rem;
+  font-size: 1.05rem;
   font-weight: 700;
 }
 
-.dock-remove-btn {
-  min-height: 2.65rem;
+.dock-action-btn {
+  min-height: 3.5rem;
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .sidebar-panel,
@@ -931,6 +979,13 @@ select:focus-visible {
   font-size: 0.8rem;
 }
 
+.draft-line-reference {
+  display: block;
+  color: #a45b24;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .draft-line-total {
   flex-shrink: 0;
   font-weight: 700;
@@ -1049,6 +1104,14 @@ select:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.form-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
+.admin-search-row {
+  margin-bottom: 0.65rem;
+}
+
 .filter-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
@@ -1060,14 +1123,20 @@ select:focus-visible {
 .sale-preview-banner {
   flex-shrink: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.75rem;
   padding: 0.55rem 0.75rem;
   border-radius: 1rem;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(122, 73, 36, 0.12);
+}
+
+.sale-preview-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .sale-preview-banner strong {
@@ -1078,6 +1147,10 @@ select:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+}
+
+.sale-preview-meta-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .table-actions {
@@ -1186,6 +1259,14 @@ select:focus-visible {
   box-shadow: 0 2rem 4rem rgba(72, 40, 19, 0.22);
 }
 
+.bill-preview-modal {
+  width: min(42rem, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  max-height: min(44rem, calc(100vh - 2rem));
+}
+
 .modal-sheet h2 {
   margin: 0.35rem 0 0.35rem;
   font: 700 1.3rem/1.1 "Georgia", serif;
@@ -1194,6 +1275,93 @@ select:focus-visible {
 .modal-sheet p {
   margin: 0 0 1rem;
   color: #7d5536;
+}
+
+.receipt-preview-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.receipt-preview-meta div {
+  padding: 0.75rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(122, 73, 36, 0.1);
+}
+
+.receipt-preview-meta span,
+.receipt-preview-line p {
+  margin: 0;
+  color: #866043;
+  font-size: 0.82rem;
+}
+
+.receipt-preview-meta strong,
+.receipt-preview-line strong {
+  color: #542915;
+}
+
+.quantity-reference-card {
+  padding: 0.75rem 0.85rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(122, 73, 36, 0.1);
+}
+
+.quantity-reference-card span {
+  display: block;
+  color: #866043;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.quantity-reference-card strong {
+  color: #542915;
+  font-size: 1.1rem;
+}
+
+.receipt-preview-lines {
+  min-height: 0;
+  max-height: 16rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-right: 0.1rem;
+}
+
+.receipt-preview-line {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.65rem 0.75rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(122, 73, 36, 0.1);
+}
+
+.receipt-preview-line > span {
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 999px;
+  color: #fff8f1;
+  background: #b9591e;
+  font-weight: 700;
+}
+
+.preview-totals {
+  padding: 0.75rem;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.65rem;
+  justify-content: flex-end;
 }
 
 .info-list.compact-info {
@@ -1211,6 +1379,7 @@ select:focus-visible {
   .sale-preview,
   .reports-main-split,
   .catalog-split,
+  .admin-management-grid,
   .billing-main-row,
   .billing-quantity-dock {
     grid-template-columns: 1fr;
@@ -1256,6 +1425,7 @@ select:focus-visible {
 
   .form-grid,
   .form-grid.compact,
+  .receipt-preview-meta,
   .checkout-actions,
   .shortcut-row,
   .totals-panel {
