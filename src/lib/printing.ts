@@ -8,6 +8,8 @@ import {
 } from "./format";
 import type { PrinterProfile, SaleDetails, ShopProfile } from "../types";
 
+const THERMAL_WIDTH = 42;
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -15,6 +17,140 @@ function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function toReceiptMoney(paise: number) {
+  return (paise / 100).toFixed(2);
+}
+
+function centerText(value: string, width = THERMAL_WIDTH) {
+  const trimmed = value.trim();
+  if (trimmed.length >= width) {
+    return trimmed.slice(0, width);
+  }
+
+  const leftPadding = Math.floor((width - trimmed.length) / 2);
+  return `${" ".repeat(leftPadding)}${trimmed}`;
+}
+
+function rightPair(label: string, value: string, width = THERMAL_WIDTH) {
+  const safeLabel = label.slice(0, width);
+  const safeValue = value.slice(0, width);
+  const spacing = Math.max(1, width - safeLabel.length - safeValue.length);
+  return `${safeLabel}${" ".repeat(spacing)}${safeValue}`;
+}
+
+function padCell(value: string, width: number, align: "left" | "right" = "left") {
+  const safeValue = value.length > width ? value.slice(0, width) : value;
+  return align === "right" ? safeValue.padStart(width, " ") : safeValue.padEnd(width, " ");
+}
+
+function receiptDateParts(value: string) {
+  const date = new Date(value);
+  return {
+    date: new Intl.DateTimeFormat("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(date),
+    time: new Intl.DateTimeFormat("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }).format(date),
+  };
+}
+
+const SMALL_NUMBER_WORDS = [
+  "Zero",
+  "One",
+  "Two",
+  "Three",
+  "Four",
+  "Five",
+  "Six",
+  "Seven",
+  "Eight",
+  "Nine",
+  "Ten",
+  "Eleven",
+  "Twelve",
+  "Thirteen",
+  "Fourteen",
+  "Fifteen",
+  "Sixteen",
+  "Seventeen",
+  "Eighteen",
+  "Nineteen",
+];
+
+const TENS_WORDS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+
+function twoDigitWords(value: number): string {
+  if (value < 20) {
+    return SMALL_NUMBER_WORDS[value];
+  }
+
+  const tens = Math.floor(value / 10);
+  const ones = value % 10;
+  return ones === 0 ? TENS_WORDS[tens] : `${TENS_WORDS[tens]} ${SMALL_NUMBER_WORDS[ones]}`;
+}
+
+function numberToIndianWords(value: number): string {
+  if (value === 0) {
+    return "Zero";
+  }
+
+  const parts: string[] = [];
+  let remaining = value;
+  const crore = Math.floor(remaining / 10000000);
+  if (crore > 0) {
+    parts.push(`${numberToIndianWords(crore)} Crore`);
+    remaining %= 10000000;
+  }
+  const lakh = Math.floor(remaining / 100000);
+  if (lakh > 0) {
+    parts.push(`${numberToIndianWords(lakh)} Lakh`);
+    remaining %= 100000;
+  }
+  const thousand = Math.floor(remaining / 1000);
+  if (thousand > 0) {
+    parts.push(`${numberToIndianWords(thousand)} Thousand`);
+    remaining %= 1000;
+  }
+  const hundred = Math.floor(remaining / 100);
+  if (hundred > 0) {
+    parts.push(`${SMALL_NUMBER_WORDS[hundred]} Hundred`);
+    remaining %= 100;
+  }
+  if (remaining > 0) {
+    parts.push(twoDigitWords(remaining));
+  }
+
+  return parts.join(" ");
+}
+
+function wrapReceiptText(value: string, width = THERMAL_WIDTH) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    if (!current) {
+      current = word;
+    } else if (`${current} ${word}`.length <= width) {
+      current = `${current} ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+
+  return lines;
 }
 
 function groupTaxRows(sale: SaleDetails) {
@@ -61,6 +197,11 @@ function buildSharedHeader(shop: ShopProfile, sale: SaleDetails, title: string) 
       ${
         sale.customerName
           ? `<div><strong>Customer</strong><span>${escapeHtml(sale.customerName)}</span></div>`
+          : ""
+      }
+      ${
+        sale.customerGstin
+          ? `<div><strong>Buyer GSTIN</strong><span>${escapeHtml(sale.customerGstin)}</span></div>`
           : ""
       }
       <div>
@@ -420,6 +561,65 @@ export function buildSalePrintHtml(
   return requestedDocument === "receipt"
     ? buildReceiptHtml(shop, sale, printerName)
     : buildInvoiceHtml(shop, sale, printerName);
+}
+
+export function buildThermalReceiptText(shop: ShopProfile, sale: SaleDetails) {
+  const separator = "-".repeat(THERMAL_WIDTH);
+  const wideSeparator = "=".repeat(THERMAL_WIDTH);
+  const { date, time } = receiptDateParts(sale.saleTimestamp);
+  const taxRows = groupTaxRows(sale).filter(([gstRate]) => gstRate > 0);
+  const amountInWords = `${numberToIndianWords(Math.round(sale.grandTotalPaise / 100))} Only`;
+  const lines: string[] = [
+    centerText(shop.shopName.toUpperCase()),
+    ...wrapReceiptText(shop.address || "S.R.C.B Road, Fancy Bazar, Guwahati", THERMAL_WIDTH).map((line) =>
+      centerText(line),
+    ),
+    centerText(shop.phone ? `PH - ${shop.phone}` : "PH - 0361 2542213"),
+    centerText(shop.gstin ? `GSTIN - ${shop.gstin}` : "GSTIN -"),
+    centerText(DOCUMENT_TYPE_LABELS[sale.documentType]),
+    separator,
+    rightPair(`Memo# ${sale.billNumber}`, `${time}  ${date}`),
+    sale.customerName ? `Customer: ${sale.customerName}`.slice(0, THERMAL_WIDTH) : "Customer: Walk-in",
+    ...(sale.customerGstin ? [`GSTIN: ${sale.customerGstin}`.slice(0, THERMAL_WIDTH)] : []),
+    centerText(`Order# ${sale.id}`),
+    separator,
+    `${padCell("Sr Product", 18)}${padCell("Qty", 8, "right")}${padCell("Rate", 8, "right")}${padCell("Amount", 8, "right")}`,
+    separator,
+  ];
+
+  sale.lines.forEach((line, index) => {
+    const quantity = quantityMillisToDisplay(line.quantityMillis, line.unit).replace("piece", "Pcs").replace("pc", "Pcs");
+    lines.push(
+      `${padCell(`${index + 1} ${line.itemName.toUpperCase()}`, 18)}${padCell(quantity, 8, "right")}${padCell(
+        toReceiptMoney(line.unitPricePaise),
+        8,
+        "right",
+      )}${padCell(toReceiptMoney(line.lineTotalPaise), 8, "right")}`,
+    );
+  });
+
+  lines.push(
+    separator,
+    rightPair("Sub Total", toReceiptMoney(sale.subtotalPaise)),
+    wideSeparator,
+    rightPair(`Total Qty: ${quantityMillisToDisplay(sale.lines.reduce((sum, line) => sum + line.quantityMillis, 0), "piece")}`, `Amt: ${toReceiptMoney(sale.grandTotalPaise)}`),
+    ...wrapReceiptText(`(INR ${amountInWords})`, THERMAL_WIDTH),
+    rightPair("Tender:", toReceiptMoney(sale.grandTotalPaise)),
+    rightPair(`Pay Mode: ${formatPaymentModeLabel(sale.paymentMode)}:`, toReceiptMoney(sale.grandTotalPaise)),
+    separator,
+    rightPair("Item Value", toReceiptMoney(sale.subtotalPaise)),
+  );
+
+  for (const [gstRate, totals] of taxRows) {
+    const halfRate = gstRate / 2;
+    lines.push(
+      rightPair(`Output Cgst @ ${halfRate}%`, toReceiptMoney(Math.round(totals.tax / 2))),
+      rightPair(`Output Sgst @ ${halfRate}%`, toReceiptMoney(totals.tax - Math.round(totals.tax / 2))),
+    );
+  }
+
+  lines.push(separator, "", centerText((shop.footerNote || "THANK YOU, VISIT AGAIN").toUpperCase()), "", "");
+  return lines.join("\n");
 }
 
 export function printHtmlDocument(title: string, html: string) {

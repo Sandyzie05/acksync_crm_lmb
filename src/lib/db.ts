@@ -4,6 +4,7 @@ import type {
   AppSnapshot,
   AuditEntry,
   Category,
+  DailySalesSummaryRow,
   DashboardMetrics,
   DraftLine,
   GstSummaryRow,
@@ -59,6 +60,7 @@ interface SqlItemRow {
   unit: string;
   unit_price_paise: number;
   gst_rate: number;
+  price_includes_gst: number;
   is_active: number;
   created_at: string;
   updated_at: string;
@@ -91,9 +93,10 @@ interface SqlAuditRow {
 interface SqlSaleRow {
   id: number;
   bill_number: string;
-  document_type: "receipt" | "gst_invoice";
+  document_type: "receipt" | "manual_receipt" | "gst_invoice";
   sale_timestamp: string;
   customer_name: string | null;
+  customer_gstin: string | null;
   payment_mode: string;
   subtotal_paise: number;
   tax_total_paise: number;
@@ -114,6 +117,7 @@ interface SqlSaleLineRow {
   quantity_millis: number;
   unit_price_paise: number;
   gst_rate: number;
+  price_includes_gst: number;
   line_subtotal_paise: number;
   line_tax_paise: number;
   line_total_paise: number;
@@ -160,6 +164,7 @@ function mapItem(row: SqlItemRow): Item {
     unit: row.unit,
     unitPricePaise: row.unit_price_paise,
     gstRate: row.gst_rate,
+    priceIncludesGst: Boolean(row.price_includes_gst),
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -203,6 +208,7 @@ function mapSaleRow(row: SqlSaleRow): SaleRegisterRow {
     documentType: row.document_type,
     saleTimestamp: row.sale_timestamp,
     customerName: row.customer_name,
+    customerGstin: row.customer_gstin,
     paymentMode: row.payment_mode,
     subtotalPaise: row.subtotal_paise,
     taxTotalPaise: row.tax_total_paise,
@@ -225,6 +231,7 @@ function mapSaleLine(row: SqlSaleLineRow): SaleLine {
     quantityMillis: row.quantity_millis,
     unitPricePaise: row.unit_price_paise,
     gstRate: row.gst_rate,
+    priceIncludesGst: Boolean(row.price_includes_gst),
     lineSubtotalPaise: row.line_subtotal_paise,
     lineTaxPaise: row.line_tax_paise,
     lineTotalPaise: row.line_total_paise,
@@ -270,6 +277,7 @@ async function initialiseDatabase(db: Database) {
       unit TEXT NOT NULL,
       unit_price_paise INTEGER NOT NULL,
       gst_rate INTEGER NOT NULL,
+      price_includes_gst INTEGER NOT NULL DEFAULT 1,
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -295,6 +303,7 @@ async function initialiseDatabase(db: Database) {
       document_type TEXT NOT NULL,
       sale_timestamp TEXT NOT NULL,
       customer_name TEXT,
+      customer_gstin TEXT,
       payment_mode TEXT NOT NULL,
       subtotal_paise INTEGER NOT NULL,
       tax_total_paise INTEGER NOT NULL,
@@ -317,6 +326,7 @@ async function initialiseDatabase(db: Database) {
       quantity_millis INTEGER NOT NULL,
       unit_price_paise INTEGER NOT NULL,
       gst_rate INTEGER NOT NULL,
+      price_includes_gst INTEGER NOT NULL DEFAULT 1,
       line_subtotal_paise INTEGER NOT NULL,
       line_tax_paise INTEGER NOT NULL,
       line_total_paise INTEGER NOT NULL,
@@ -340,6 +350,20 @@ async function initialiseDatabase(db: Database) {
   if (!saleColumns.some((column) => column.name === "customer_name")) {
     await db.execute(`ALTER TABLE sales ADD COLUMN customer_name TEXT`);
   }
+  if (!saleColumns.some((column) => column.name === "customer_gstin")) {
+    await db.execute(`ALTER TABLE sales ADD COLUMN customer_gstin TEXT`);
+  }
+  await db.execute(`UPDATE sales SET document_type = 'manual_receipt' WHERE document_type = 'retail_receipt'`);
+
+  const itemColumns = await db.select<{ name: string }[]>(`PRAGMA table_info(items)`);
+  if (!itemColumns.some((column) => column.name === "price_includes_gst")) {
+    await db.execute(`ALTER TABLE items ADD COLUMN price_includes_gst INTEGER NOT NULL DEFAULT 1`);
+  }
+
+  const saleLineColumns = await db.select<{ name: string }[]>(`PRAGMA table_info(sale_lines)`);
+  if (!saleLineColumns.some((column) => column.name === "price_includes_gst")) {
+    await db.execute(`ALTER TABLE sale_lines ADD COLUMN price_includes_gst INTEGER NOT NULL DEFAULT 1`);
+  }
 
   await db.execute(
     `INSERT OR IGNORE INTO shop_profile (
@@ -353,8 +377,23 @@ async function initialiseDatabase(db: Database) {
 
   await db.execute(`INSERT OR IGNORE INTO admin_settings (id, admin_name, last_backup_at) VALUES (1, 'Admin', NULL)`);
 
-  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('cash', 1)`);
-  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('upi', 1)`);
+  await db.execute(
+    `UPDATE payment_options
+     SET name = 'Cash'
+     WHERE lower(trim(name)) = 'cash'
+       AND NOT EXISTS (SELECT 1 FROM payment_options WHERE name = 'Cash')`,
+  );
+  await db.execute(
+    `UPDATE payment_options
+     SET name = 'Axis UPI'
+     WHERE lower(trim(name)) = 'upi'
+       AND NOT EXISTS (SELECT 1 FROM payment_options WHERE name = 'Axis UPI')`,
+  );
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('Cash', 1)`);
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('Axis UPI', 1)`);
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('Zomato', 1)`);
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('PhonePe', 1)`);
+  await db.execute(`INSERT OR IGNORE INTO payment_options (name, is_active) VALUES ('Credit sale', 1)`);
 }
 
 async function getDb() {
@@ -538,6 +577,7 @@ export async function listItems(includeInactive = true) {
        items.unit,
        items.unit_price_paise,
        items.gst_rate,
+       items.price_includes_gst,
        items.is_active,
        items.created_at,
        items.updated_at
@@ -557,6 +597,7 @@ export async function saveItem(input: {
   unit: string;
   unitPricePaise: number;
   gstRate: number;
+  priceIncludesGst: boolean;
   isActive: boolean;
 }) {
   const db = await getDb();
@@ -594,14 +635,15 @@ export async function saveItem(input: {
     await db.execute(
       `UPDATE items
        SET category_id = $1, name = $2, unit = $3, unit_price_paise = $4, gst_rate = $5,
-           is_active = $6, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $7`,
+           price_includes_gst = $6, is_active = $7, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8`,
       [
         input.categoryId,
         normalizedName,
         normalizedUnit,
         input.unitPricePaise,
         input.gstRate,
+        input.priceIncludesGst ? 1 : 0,
         input.isActive ? 1 : 0,
         input.id,
       ],
@@ -624,14 +666,15 @@ export async function saveItem(input: {
   }
 
   const result = await db.execute(
-    `INSERT INTO items (category_id, name, unit, unit_price_paise, gst_rate, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO items (category_id, name, unit, unit_price_paise, gst_rate, price_includes_gst, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       input.categoryId,
       normalizedName,
       normalizedUnit,
       input.unitPricePaise,
       input.gstRate,
+      input.priceIncludesGst ? 1 : 0,
       input.isActive ? 1 : 0,
     ],
   );
@@ -701,7 +744,16 @@ export async function listPaymentOptions(includeInactive = true) {
     `SELECT id, name, is_active, created_at, updated_at
      FROM payment_options
      ${filter}
-     ORDER BY is_active DESC, lower(name) ASC`,
+     ORDER BY is_active DESC,
+       CASE lower(name)
+         WHEN 'cash' THEN 1
+         WHEN 'axis upi' THEN 2
+         WHEN 'zomato' THEN 3
+         WHEN 'phonepe' THEN 4
+         WHEN 'credit sale' THEN 5
+         ELSE 50
+       END,
+       lower(name) ASC`,
   );
 
   return rows.map(mapPaymentOption);
@@ -835,6 +887,7 @@ export async function listSales(dateFrom?: string, dateTo?: string) {
        document_type,
        sale_timestamp,
        customer_name,
+       customer_gstin,
        payment_mode,
        subtotal_paise,
        tax_total_paise,
@@ -861,6 +914,7 @@ export async function listRecentSales(limit = 8) {
        document_type,
        sale_timestamp,
        customer_name,
+       customer_gstin,
        payment_mode,
        subtotal_paise,
        tax_total_paise,
@@ -887,6 +941,7 @@ export async function getSaleDetails(saleId: number): Promise<SaleDetails | null
        document_type,
        sale_timestamp,
        customer_name,
+       customer_gstin,
        payment_mode,
        subtotal_paise,
        tax_total_paise,
@@ -915,6 +970,7 @@ export async function getSaleDetails(saleId: number): Promise<SaleDetails | null
        quantity_millis,
        unit_price_paise,
        gst_rate,
+       price_includes_gst,
        line_subtotal_paise,
        line_tax_paise,
        line_total_paise
@@ -928,6 +984,32 @@ export async function getSaleDetails(saleId: number): Promise<SaleDetails | null
     ...mapSaleRow(sale),
     lines: lines.map(mapSaleLine),
   };
+}
+
+export async function deleteVoidedSale(saleId: number) {
+  const db = await getDb();
+  const [sale] = await db.select<Pick<SqlSaleRow, "id" | "bill_number" | "status">[]>(
+    `SELECT id, bill_number, status FROM sales WHERE id = $1`,
+    [saleId],
+  );
+
+  if (!sale) {
+    throw new Error("The voided bill could not be found.");
+  }
+  if (sale.status !== "voided") {
+    throw new Error("Only voided bills can be permanently deleted.");
+  }
+
+  await db.execute(`UPDATE sales SET reissue_of_sale_id = NULL WHERE reissue_of_sale_id = $1`, [saleId]);
+  await db.execute(`DELETE FROM sale_lines WHERE sale_id = $1`, [saleId]);
+  await db.execute(`DELETE FROM sales WHERE id = $1`, [saleId]);
+  await recordAudit(
+    db,
+    "voided_sale_deleted",
+    "sale",
+    saleId,
+    `Voided bill ${sale.bill_number} permanently deleted.`,
+  );
 }
 
 export async function completeSale(input: SaleDraftInput) {
@@ -956,7 +1038,7 @@ export async function completeSale(input: SaleDraftInput) {
   );
 
   const profile = mapShopProfile(profileRow);
-  const isReceipt = input.documentType === "receipt";
+  const isReceiptLike = input.documentType !== "gst_invoice";
 
   let billNumber: string;
   let voidedLedgerBillNumber = "";
@@ -970,8 +1052,8 @@ export async function completeSale(input: SaleDraftInput) {
     if (!prior) {
       throw new Error("The original sale could not be found for reissue.");
     }
-    if (prior.status !== "completed") {
-      throw new Error("Only completed bills can be reissued.");
+    if (prior.status !== "completed" && prior.status !== "reissued") {
+      throw new Error("Only completed or corrected bills can be reissued.");
     }
     if (prior.document_type !== input.documentType) {
       throw new Error("Document type must match the bill being reissued.");
@@ -981,11 +1063,13 @@ export async function completeSale(input: SaleDraftInput) {
     voidedLedgerBillNumber = `${prior.bill_number}-VOID-${prior.id}`;
     await db.execute(`UPDATE sales SET bill_number = $1 WHERE id = $2`, [voidedLedgerBillNumber, prior.id]);
   } else {
-    billNumber = `${isReceipt ? profile.receiptPrefix : profile.invoicePrefix}-${String(
-      isReceipt ? profile.nextReceiptNumber : profile.nextInvoiceNumber,
+    const prefix =
+      input.documentType === "manual_receipt" ? "MR" : isReceiptLike ? profile.receiptPrefix : profile.invoicePrefix;
+    billNumber = `${prefix}-${String(
+      isReceiptLike ? profile.nextReceiptNumber : profile.nextInvoiceNumber,
     ).padStart(5, "0")}`;
 
-    if (isReceipt) {
+    if (isReceiptLike) {
       await db.execute(`UPDATE shop_profile SET next_receipt_number = next_receipt_number + 1 WHERE id = 1`);
     } else {
       await db.execute(`UPDATE shop_profile SET next_invoice_number = next_invoice_number + 1 WHERE id = 1`);
@@ -994,13 +1078,14 @@ export async function completeSale(input: SaleDraftInput) {
 
   const insertSaleResult = await db.execute(
     `INSERT INTO sales (
-       bill_number, document_type, sale_timestamp, customer_name, payment_mode,
+       bill_number, document_type, sale_timestamp, customer_name, customer_gstin, payment_mode,
        subtotal_paise, tax_total_paise, grand_total_paise, status, notes, reissue_of_sale_id
-     ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4, $5, $6, $7, $8, $9, $10)`,
+     ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       billNumber,
       input.documentType,
       input.customerName.trim() || null,
+      input.customerGstin?.trim() || null,
       input.paymentMode.trim(),
       subtotalPaise,
       taxTotalPaise,
@@ -1020,8 +1105,8 @@ export async function completeSale(input: SaleDraftInput) {
     await db.execute(
       `INSERT INTO sale_lines (
          sale_id, item_id, item_name, category_name, unit, quantity_millis,
-         unit_price_paise, gst_rate, line_subtotal_paise, line_tax_paise, line_total_paise
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         unit_price_paise, gst_rate, price_includes_gst, line_subtotal_paise, line_tax_paise, line_total_paise
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         saleId,
         line.itemId,
@@ -1031,6 +1116,7 @@ export async function completeSale(input: SaleDraftInput) {
         line.quantityMillis,
         line.unitPricePaise,
         line.gstRate,
+        line.priceIncludesGst ? 1 : 0,
         line.lineSubtotalPaise,
         line.lineTaxPaise,
         line.lineTotalPaise,
@@ -1126,6 +1212,43 @@ export async function getPaymentSummary(
   }));
 }
 
+export async function getDailySalesSummary(
+  dateFrom: string,
+  dateTo: string,
+): Promise<DailySalesSummaryRow[]> {
+  const db = await getDb();
+  const rows = await db.select<
+    {
+      sale_date: string;
+      sale_count: number;
+      subtotal_paise: number;
+      tax_paise: number;
+      grand_total_paise: number;
+    }[]
+  >(
+    `SELECT
+       date(sale_timestamp, 'localtime') AS sale_date,
+       COUNT(*) AS sale_count,
+       COALESCE(SUM(subtotal_paise), 0) AS subtotal_paise,
+       COALESCE(SUM(tax_total_paise), 0) AS tax_paise,
+       COALESCE(SUM(grand_total_paise), 0) AS grand_total_paise
+     FROM sales
+     WHERE status != 'voided'
+       AND date(sale_timestamp, 'localtime') BETWEEN date($1) AND date($2)
+     GROUP BY date(sale_timestamp, 'localtime')
+     ORDER BY sale_date DESC`,
+    [dateFrom, dateTo],
+  );
+
+  return rows.map((row) => ({
+    saleDate: row.sale_date,
+    saleCount: row.sale_count,
+    subtotalPaise: row.subtotal_paise,
+    taxPaise: row.tax_paise,
+    grandTotalPaise: row.grand_total_paise,
+  }));
+}
+
 export async function getItemwiseSummary(
   dateFrom: string,
   dateTo: string,
@@ -1137,6 +1260,8 @@ export async function getItemwiseSummary(
       category_name: string;
       unit: string;
       quantity_millis: number;
+      taxable_paise: number;
+      tax_paise: number;
       gross_paise: number;
     }[]
   >(
@@ -1145,6 +1270,8 @@ export async function getItemwiseSummary(
        sale_lines.category_name,
        sale_lines.unit,
        COALESCE(SUM(sale_lines.quantity_millis), 0) AS quantity_millis,
+       COALESCE(SUM(sale_lines.line_subtotal_paise), 0) AS taxable_paise,
+       COALESCE(SUM(sale_lines.line_tax_paise), 0) AS tax_paise,
        COALESCE(SUM(sale_lines.line_total_paise), 0) AS gross_paise
      FROM sale_lines
      JOIN sales ON sales.id = sale_lines.sale_id
@@ -1160,6 +1287,8 @@ export async function getItemwiseSummary(
     categoryName: row.category_name,
     unit: row.unit,
     quantityMillis: row.quantity_millis,
+    taxablePaise: row.taxable_paise,
+    taxPaise: row.tax_paise,
     grossPaise: row.gross_paise,
   }));
 }
@@ -1211,6 +1340,7 @@ export function toDraftLinesFromSale(sale: SaleDetails): DraftLine[] {
     quantityMillis: line.quantityMillis,
     unitPricePaise: line.unitPricePaise,
     gstRate: line.gstRate,
+    priceIncludesGst: line.priceIncludesGst,
     lineSubtotalPaise: line.lineSubtotalPaise,
     lineTaxPaise: line.lineTaxPaise,
     lineTotalPaise: line.lineTotalPaise,

@@ -5,9 +5,12 @@ import "./App.css";
 import {
   clearPrinterProfile,
   completeSale,
+  deleteVoidedSale,
   markBackupCompleted,
+  getDailySalesSummary,
   getDashboardMetrics,
   getGstSummary,
+  getItemwiseSummary,
   getPaymentSummary,
   getSaleDetails,
   listSales,
@@ -29,6 +32,7 @@ import {
   formatCurrencyFromPaise,
   formatDateTime,
   formatGstRate,
+  formatIndianDate,
   formatPaymentModeLabel,
   fromInputPrice,
   quantityMillisToDisplay,
@@ -36,22 +40,32 @@ import {
   quantityStringToMillis,
   recalculateDraftLine,
   sumDraftTotals,
+  toInclusiveBreakdownFromTotal,
   toInputPrice,
   todayIsoDate,
 } from "./lib/format";
 import { PRINTING_ENABLED } from "./lib/features";
-import { buildSalePrintHtml, printHtmlDocument } from "./lib/printing";
-import { exportGstSummary, exportPaymentSummary, exportSalesRegister } from "./lib/reports";
+import { buildSalePrintHtml, buildThermalReceiptText, printHtmlDocument } from "./lib/printing";
+import {
+  exportDailySalesSummary,
+  exportGstSummary,
+  exportItemwiseSummary,
+  exportPaymentSummary,
+  exportSalesRegister,
+} from "./lib/reports";
 import type {
   AdminSettings,
+  AppLockStatus,
   AppSnapshot,
   AppView,
   Category,
+  DailySalesSummaryRow,
   DashboardMetrics,
   DocumentType,
   DraftLine,
   GstSummaryRow,
   Item,
+  ItemwiseSummaryRow,
   PaymentOption,
   PaymentMode,
   PaymentSummaryRow,
@@ -82,6 +96,7 @@ type QuantityEditorState =
 
 const HOME_ACTIONS: { view: AppView; label: string; eyebrow: string }[] = [
   { view: "billing", label: "Generate Receipt", eyebrow: "Counter" },
+  { view: "manual", label: "Manual Receipt", eyebrow: "Custom Price" },
   { view: "admin", label: "Admin", eyebrow: "Catalog" },
   { view: "reports", label: "Reporting", eyebrow: "Tax & Closing" },
   {
@@ -94,6 +109,7 @@ const HOME_ACTIONS: { view: AppView; label: string; eyebrow: string }[] = [
 const NAV_LABELS: Record<AppView, string> = {
   home: "Home",
   billing: "Generate Receipt",
+  manual: "Manual Receipt",
   admin: "Admin",
   reports: "Reports",
   settings: "Settings",
@@ -124,6 +140,8 @@ const INITIAL_METRICS: DashboardMetrics = {
   activeCategories: 0,
   pendingPrinterProfiles: PRINTING_ENABLED ? 2 : 0,
 };
+
+const initialReportDate = todayIsoDate();
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message.trim()) {
@@ -159,6 +177,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [workingLabel, setWorkingLabel] = useState("Loading shop data…");
   const [toast, setToast] = useState<ToastState>(null);
+  const [appLockStatus, setAppLockStatus] = useState<AppLockStatus | null>(null);
+  const [unlockCode, setUnlockCode] = useState("");
 
   const [shopProfile, setShopProfile] = useState<ShopProfile>(INITIAL_SHOP_PROFILE);
   const [adminSettingsState, setAdminSettingsState] = useState<AdminSettings>(INITIAL_ADMIN_SETTINGS);
@@ -184,6 +204,7 @@ function App() {
     customUnit: "",
     unitPrice: "0.00",
     gstRate: "5",
+    priceIncludesGst: true,
     isActive: true,
   });
   const [paymentOptionForm, setPaymentOptionForm] = useState({
@@ -212,11 +233,25 @@ function App() {
   const [previewShouldPrint, setPreviewShouldPrint] = useState(false);
   const [reissueSource, setReissueSource] = useState<SaleDetails | null>(null);
 
-  const [reportDateFrom, setReportDateFrom] = useState(todayIsoDate());
-  const [reportDateTo, setReportDateTo] = useState(todayIsoDate());
+  const [manualPaymentMode, setManualPaymentMode] = useState<PaymentMode>("cash");
+  const [manualCustomerName, setManualCustomerName] = useState("");
+  const [manualCustomerGstin, setManualCustomerGstin] = useState("");
+  const [manualNotes, setManualNotes] = useState("");
+  const [manualDraftLines, setManualDraftLines] = useState<DraftLine[]>([]);
+  const [manualLineForm, setManualLineForm] = useState({
+    itemId: "",
+    quantity: "1",
+    rate: "",
+    total: "",
+  });
+
+  const [reportDateFrom, setReportDateFrom] = useState(initialReportDate);
+  const [reportDateTo, setReportDateTo] = useState(initialReportDate);
   const [reportSales, setReportSales] = useState<SaleRegisterRow[]>([]);
   const [gstSummary, setGstSummary] = useState<GstSummaryRow[]>([]);
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummaryRow[]>([]);
+  const [itemwiseSummary, setItemwiseSummary] = useState<ItemwiseSummaryRow[]>([]);
+  const [dailySalesSummary, setDailySalesSummary] = useState<DailySalesSummaryRow[]>([]);
   const [reportSearch, setReportSearch] = useState("");
   const [salePreview, setSalePreview] = useState<SaleDetails | null>(null);
 
@@ -305,7 +340,10 @@ function App() {
     if (!enabledPaymentOptions.some((option) => option.name === paymentMode)) {
       setPaymentMode(enabledPaymentOptions[0].name);
     }
-  }, [paymentOptions, paymentMode]);
+    if (!enabledPaymentOptions.some((option) => option.name === manualPaymentMode)) {
+      setManualPaymentMode(enabledPaymentOptions[0].name);
+    }
+  }, [paymentOptions, paymentMode, manualPaymentMode]);
 
   const activeCategories = categories.filter((category) => category.isActive);
   const activePaymentOptions = paymentOptions.filter((option) => option.isActive);
@@ -357,8 +395,10 @@ function App() {
 
   const selectedDraftLine = draftLines.find((line) => line.draftId === selectedDraftLineId) ?? null;
   const billingTotals = sumDraftTotals(draftLines);
+  const manualTotals = sumDraftTotals(manualDraftLines);
+  const billingReissueSource = reissueSource?.documentType === "manual_receipt" ? null : reissueSource;
   const findOriginalLineForDraft = (draftLine: DraftLine) =>
-    reissueSource?.lines.find((line) =>
+    billingReissueSource?.lines.find((line) =>
       line.itemId != null && line.itemId !== 0 && draftLine.itemId !== 0
         ? line.itemId === draftLine.itemId &&
           line.unit === draftLine.unit &&
@@ -397,6 +437,12 @@ function App() {
     }
 
     try {
+      const lockStatus = await invoke<AppLockStatus>("get_app_lock_status");
+      setAppLockStatus(lockStatus);
+      if (lockStatus.isLocked) {
+        return;
+      }
+
       const snapshot = await loadAppSnapshot();
       const [printers, runtime] = await Promise.all([
         PRINTING_ENABLED ? safeLoadPrinters() : Promise.resolve([]),
@@ -450,17 +496,21 @@ function App() {
     }
   }
 
-  async function loadReports(profileOverride?: ShopProfile) {
-    const [sales, gstRows, paymentRows] = await Promise.all([
-      listSales(reportDateFrom, reportDateTo),
-      getGstSummary(reportDateFrom, reportDateTo),
-      getPaymentSummary(reportDateFrom, reportDateTo),
+  async function loadReports(profileOverride?: ShopProfile, dateFrom = reportDateFrom, dateTo = reportDateTo) {
+    const [sales, gstRows, paymentRows, itemRows, dailyRows] = await Promise.all([
+      listSales(dateFrom, dateTo),
+      getGstSummary(dateFrom, dateTo),
+      getPaymentSummary(dateFrom, dateTo),
+      getItemwiseSummary(dateFrom, dateTo),
+      getDailySalesSummary(dateFrom, dateTo),
     ]);
 
     startTransition(() => {
       setReportSales(sales);
       setGstSummary(gstRows);
       setPaymentSummary(paymentRows);
+      setItemwiseSummary(itemRows);
+      setDailySalesSummary(dailyRows);
 
       if (profileOverride) {
         setShopProfile(profileOverride);
@@ -487,6 +537,42 @@ function App() {
 
   function getDefaultPaymentMode() {
     return activePaymentOptions[0]?.name ?? "cash";
+  }
+
+  function readReportDateRange() {
+    const dateFrom = reportDateFrom;
+    const dateTo = reportDateTo;
+
+    if (!dateFrom || !dateTo) {
+      setToast({ kind: "error", message: "Select both report dates." });
+      return null;
+    }
+    if (dateFrom > dateTo) {
+      setToast({ kind: "error", message: "The report start date must be before the end date." });
+      return null;
+    }
+
+    return { dateFrom, dateTo };
+  }
+
+  function resetManualReceiptDraft() {
+    setManualDraftLines([]);
+    setManualCustomerName("");
+    setManualCustomerGstin("");
+    setManualNotes("");
+    setManualPaymentMode(getDefaultPaymentMode());
+    setManualLineForm({
+      itemId: "",
+      quantity: "1",
+      rate: "",
+      total: "",
+    });
+    setSelectedCategoryFilter("all");
+    setItemSearch("");
+  }
+
+  function getReceiptPrinterName() {
+    return printerProfiles.find((profile) => profile.profileType === "receipt")?.printerName.trim() ?? "";
   }
 
   function resetBillingDraft() {
@@ -519,7 +605,7 @@ function App() {
         line.gstRate === item.gstRate,
     );
 
-    if (existingLine && reissueSource) {
+    if (existingLine && billingReissueSource) {
       openDraftLineQuantityEditor(existingLine);
       return;
     }
@@ -561,6 +647,7 @@ function App() {
       customUnit: "",
       unitPrice: "0.00",
       gstRate: "5",
+      priceIncludesGst: true,
       isActive: true,
     });
   }
@@ -674,6 +761,7 @@ function App() {
         unit,
         unitPricePaise: fromInputPrice(itemForm.unitPrice),
         gstRate: Number(itemForm.gstRate),
+        priceIncludesGst: itemForm.priceIncludesGst,
         isActive: itemForm.isActive,
       });
       setToast({ kind: "success", message: "Item saved." });
@@ -921,6 +1009,7 @@ function App() {
             quantityMillis: 0,
             unitPricePaise: item.unitPricePaise,
             gstRate: item.gstRate,
+            priceIncludesGst: item.priceIncludesGst,
             lineSubtotalPaise: 0,
             lineTaxPaise: 0,
             lineTotalPaise: 0,
@@ -988,9 +1077,10 @@ function App() {
         documentType: billingDocumentType,
         paymentMode,
         customerName: previewCustomerName,
+        customerGstin: "",
         notes: billNotes,
         lines: draftLines,
-        reissueOfSaleId: reissueSource?.id ?? null,
+        reissueOfSaleId: billingReissueSource?.id ?? null,
       });
       const sale = await getSaleDetails(saleId);
       const snapshot = await loadAppSnapshot();
@@ -1009,8 +1099,20 @@ function App() {
       let printWarning = "";
       if (PRINTING_ENABLED && shouldPrint) {
         try {
-          const html = buildSalePrintHtml(shopProfile, sale, billingDocumentType, printerProfiles);
-          printHtmlDocument(sale.billNumber, html);
+          if (billingDocumentType !== "gst_invoice") {
+            const printerName = getReceiptPrinterName();
+            if (!printerName) {
+              throw new Error("Receipt printer is not configured.");
+            }
+
+            await invoke<string>("print_receipt_text", {
+              printerName,
+              receiptText: buildThermalReceiptText(shopProfile, sale),
+            });
+          } else {
+            const html = buildSalePrintHtml(shopProfile, sale, billingDocumentType, printerProfiles);
+            printHtmlDocument(sale.billNumber, html);
+          }
         } catch (printError) {
           printWarning = ` Bill saved, but printing failed: ${getErrorMessage(printError, "print preview could not open.")}`;
         }
@@ -1046,8 +1148,22 @@ function App() {
         return;
       }
 
-      const html = buildSalePrintHtml(shopProfile, details, requestedDocument, printerProfiles);
-      printHtmlDocument(details.billNumber, html);
+      if (requestedDocument !== "gst_invoice") {
+        const printerName = getReceiptPrinterName();
+        if (!printerName) {
+          setToast({ kind: "error", message: "Configure the receipt printer in Settings before printing." });
+          return;
+        }
+
+        await invoke<string>("print_receipt_text", {
+          printerName,
+          receiptText: buildThermalReceiptText(shopProfile, details),
+        });
+        setToast({ kind: "success", message: `Receipt ${details.billNumber} sent to ${printerName}.` });
+      } else {
+        const html = buildSalePrintHtml(shopProfile, details, requestedDocument, printerProfiles);
+        printHtmlDocument(details.billNumber, html);
+      }
     } catch (error) {
       setToast({
         kind: "error",
@@ -1081,6 +1197,22 @@ function App() {
         return;
       }
 
+      if (details.documentType === "manual_receipt") {
+        setManualDraftLines(toDraftLinesFromSale(details));
+        setManualPaymentMode(details.paymentMode);
+        setManualCustomerName(details.customerName ?? "");
+        setManualCustomerGstin(details.customerGstin ?? "");
+        setManualNotes(details.notes ?? "");
+        setManualLineForm({ itemId: "", quantity: "1", rate: "", total: "" });
+        setReissueSource(details);
+        setActiveView("manual");
+        setToast({
+          kind: "info",
+          message: `Reissue mode started for ${details.billNumber}. Save the corrected receipt to void the old entry.`,
+        });
+        return;
+      }
+
       setDraftLines(toDraftLinesFromSale(details));
       setSelectedDraftLineId(null);
       setQuantityEntry("0");
@@ -1103,16 +1235,165 @@ function App() {
     }
   }
 
+  async function handleDeleteVoidedSale(sale: SaleRegisterRow) {
+    if (sale.status !== "voided") {
+      setToast({ kind: "error", message: "Only voided bills can be permanently deleted." });
+      return;
+    }
+
+    const approved = await confirm(
+      `${sale.billNumber} is voided. Delete it permanently? It will be gone forever.`,
+      "Delete voided bill forever",
+    );
+    if (!approved) {
+      return;
+    }
+
+    setLoading(true);
+    setWorkingLabel("Deleting voided bill…");
+    try {
+      await deleteVoidedSale(sale.id);
+      setSalePreview((current) => (current?.id === sale.id ? null : current));
+      await loadReports();
+      const metrics = await getDashboardMetrics();
+      setDashboardMetrics(metrics);
+      setToast({ kind: "success", message: `${sale.billNumber} permanently deleted.` });
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "Voided bill could not be deleted."),
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleCancelReissue() {
+    resetBillingDraft();
+    setToast({ kind: "info", message: "Reissue cancelled. Ready for a fresh receipt." });
+  }
+
+  function handleCancelManualReissue() {
+    setReissueSource(null);
+    resetManualReceiptDraft();
+    setToast({ kind: "info", message: "Manual reissue cancelled. Ready for a fresh manual receipt." });
+  }
+
+  function handleSelectManualItem(item: Item) {
+    setManualLineForm((current) => ({
+      ...current,
+      itemId: `${item.id}`,
+      rate: current.rate || toInputPrice(item.unitPricePaise),
+    }));
+  }
+
+  function handleAddManualLine() {
+    const item = items.find((candidate) => candidate.id === Number(manualLineForm.itemId));
+    const quantityMillis = quantityStringToMillis(manualLineForm.quantity);
+    const totalPaise = fromInputPrice(manualLineForm.total);
+
+    if (!item) {
+      setToast({ kind: "error", message: "Select an item for the manual receipt." });
+      return;
+    }
+    if (quantityMillis <= 0) {
+      setToast({ kind: "error", message: "Enter a valid quantity." });
+      return;
+    }
+    if (totalPaise <= 0) {
+      setToast({ kind: "error", message: "Enter the required line total." });
+      return;
+    }
+
+    const enteredRatePaise = manualLineForm.rate.trim() ? fromInputPrice(manualLineForm.rate) : 0;
+    const unitPricePaise = enteredRatePaise > 0 ? enteredRatePaise : Math.round((totalPaise * 1000) / quantityMillis);
+    const totals = toInclusiveBreakdownFromTotal(totalPaise, item.gstRate);
+    const draftId = Date.now() + item.id;
+
+    setManualDraftLines((current) => [
+      ...current,
+      {
+        draftId,
+        itemId: item.id,
+        itemName: item.name,
+        categoryId: item.categoryId,
+        categoryName: item.categoryName,
+        unit: item.unit,
+        quantityMillis,
+        unitPricePaise,
+        gstRate: item.gstRate,
+        priceIncludesGst: true,
+        ...totals,
+      },
+    ]);
+    setManualLineForm({ itemId: "", quantity: "1", rate: "", total: "" });
+  }
+
+  function handleRemoveManualLine(draftId: number) {
+    setManualDraftLines((current) => current.filter((line) => line.draftId !== draftId));
+  }
+
+  async function handleSaveManualReceipt() {
+    if (manualDraftLines.length === 0) {
+      setToast({ kind: "error", message: "Add at least one item before saving the manual receipt." });
+      return;
+    }
+    if (!manualPaymentMode.trim()) {
+      setToast({ kind: "error", message: "Select a payment option before saving the manual receipt." });
+      return;
+    }
+
+    setLoading(true);
+    setWorkingLabel("Saving manual receipt…");
+
+    try {
+      const documentType: DocumentType = "manual_receipt";
+      const saleId = await completeSale({
+        documentType,
+        paymentMode: manualPaymentMode,
+        customerName: manualCustomerName,
+        customerGstin: manualCustomerGstin,
+        notes: manualNotes,
+        lines: manualDraftLines,
+        reissueOfSaleId: reissueSource?.documentType === documentType ? reissueSource.id : null,
+      });
+      const sale = await getSaleDetails(saleId);
+      const snapshot = await loadAppSnapshot();
+      await loadReports(snapshot.shopProfile);
+
+      startTransition(() => {
+        applySnapshot(snapshot);
+        resetManualReceiptDraft();
+        setReissueSource(null);
+        setActiveView("manual");
+      });
+
+      setToast({
+        kind: "success",
+        message: `${DOCUMENT_TYPE_LABELS[documentType]} ${sale?.billNumber ?? ""} saved successfully.`,
+      });
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "The manual receipt could not be saved."),
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleRefreshReports() {
-    if (reportDateFrom > reportDateTo) {
-      setToast({ kind: "error", message: "The report start date must be before the end date." });
+    const range = readReportDateRange();
+    if (!range) {
       return;
     }
 
     setLoading(true);
     setWorkingLabel("Refreshing reports…");
     try {
-      await loadReports();
+      setReportDateFrom(range.dateFrom);
+      setReportDateTo(range.dateTo);
+      await loadReports(undefined, range.dateFrom, range.dateTo);
     } catch (error) {
       setToast({
         kind: "error",
@@ -1124,13 +1405,13 @@ function App() {
   }
 
   async function handleExportSales() {
-    if (reportDateFrom > reportDateTo) {
-      setToast({ kind: "error", message: "The report start date must be before the end date." });
+    const range = readReportDateRange();
+    if (!range) {
       return;
     }
 
     try {
-      const exported = await exportSalesRegister(shopProfile, filteredReportSales, reportDateFrom, reportDateTo);
+      const exported = await exportSalesRegister(shopProfile, filteredReportSales, range.dateFrom, range.dateTo);
       if (exported) {
         setToast({ kind: "success", message: "Sale register exported." });
       }
@@ -1143,13 +1424,13 @@ function App() {
   }
 
   async function handleExportGst() {
-    if (reportDateFrom > reportDateTo) {
-      setToast({ kind: "error", message: "The report start date must be before the end date." });
+    const range = readReportDateRange();
+    if (!range) {
       return;
     }
 
     try {
-      const exported = await exportGstSummary(shopProfile, gstSummary, reportDateFrom, reportDateTo);
+      const exported = await exportGstSummary(shopProfile, gstSummary, range.dateFrom, range.dateTo);
       if (exported) {
         setToast({ kind: "success", message: "GST summary exported." });
       }
@@ -1162,13 +1443,13 @@ function App() {
   }
 
   async function handleExportPayments() {
-    if (reportDateFrom > reportDateTo) {
-      setToast({ kind: "error", message: "The report start date must be before the end date." });
+    const range = readReportDateRange();
+    if (!range) {
       return;
     }
 
     try {
-      const exported = await exportPaymentSummary(shopProfile, paymentSummary, reportDateFrom, reportDateTo);
+      const exported = await exportPaymentSummary(shopProfile, paymentSummary, range.dateFrom, range.dateTo);
       if (exported) {
         setToast({ kind: "success", message: "Payment summary exported." });
       }
@@ -1176,6 +1457,44 @@ function App() {
       setToast({
         kind: "error",
         message: getErrorMessage(error, "Payment summary export failed."),
+      });
+    }
+  }
+
+  async function handleExportItemwise() {
+    const range = readReportDateRange();
+    if (!range) {
+      return;
+    }
+
+    try {
+      const exported = await exportItemwiseSummary(shopProfile, itemwiseSummary, range.dateFrom, range.dateTo);
+      if (exported) {
+        setToast({ kind: "success", message: "Item-wise sold report exported." });
+      }
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "Item-wise export failed."),
+      });
+    }
+  }
+
+  async function handleExportDailySales() {
+    const range = readReportDateRange();
+    if (!range) {
+      return;
+    }
+
+    try {
+      const exported = await exportDailySalesSummary(shopProfile, dailySalesSummary, range.dateFrom, range.dateTo);
+      if (exported) {
+        setToast({ kind: "success", message: "Daily sale report exported." });
+      }
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "Daily sale export failed."),
       });
     }
   }
@@ -1229,10 +1548,33 @@ function App() {
     }
   }
 
+  async function handleUnlockApp() {
+    if (!unlockCode.trim()) {
+      setToast({ kind: "error", message: "Enter the unlock code." });
+      return;
+    }
+
+    setLoading(true);
+    setWorkingLabel("Unlocking app…");
+    try {
+      const lockStatus = await invoke<AppLockStatus>("unlock_app", { code: unlockCode });
+      setAppLockStatus(lockStatus);
+      setUnlockCode("");
+      await bootstrapApp();
+      setToast({ kind: "success", message: "App unlocked." });
+    } catch (error) {
+      setToast({ kind: "error", message: getErrorMessage(error, "Invalid unlock code.") });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const renderView = () => {
     switch (activeView) {
       case "billing":
         return renderBillingView();
+      case "manual":
+        return renderManualReceiptView();
       case "admin":
         return renderAdminView();
       case "reports":
@@ -1316,11 +1658,14 @@ function App() {
               />
             </section>
 
-            {reissueSource ? (
+            {billingReissueSource ? (
               <section className="mini-panel">
                 <p className="helper-banner">
-                  Reissuing <strong>{reissueSource.billNumber}</strong>. Saving voids the old bill, and each line shows its original quantity for reference.
+                  Reissuing <strong>{billingReissueSource.billNumber}</strong>. Saving voids the old bill, and each line shows its original quantity for reference.
                 </p>
+                <button type="button" className="secondary-button full-width-action" onClick={handleCancelReissue}>
+                  Cancel Reissue
+                </button>
               </section>
             ) : null}
           </aside>
@@ -1352,7 +1697,10 @@ function App() {
                   >
                     <span className="eyebrow">{item.categoryName}</span>
                     <strong>{item.name}</strong>
-                    <p>{item.unit} • {formatGstRate(item.gstRate)} GST</p>
+                    <p>
+                      {item.unit} • {formatGstRate(item.gstRate)} GST •{" "}
+                      {item.priceIncludesGst ? "incl." : "excl."}
+                    </p>
                     <span className="item-price">{formatCurrencyFromPaise(item.unitPricePaise)}</span>
                   </button>
                 ))
@@ -1390,7 +1738,8 @@ function App() {
                     <div className="draft-line-main">
                       <strong>{line.itemName}</strong>
                       <span className="draft-line-meta">
-                        {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST
+                        {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST ·{" "}
+                        {line.priceIncludesGst ? "incl." : "excl."}
                       </span>
                       {originalLine ? (
                         <span className="draft-line-reference">
@@ -1564,7 +1913,8 @@ function App() {
                 <div>
                   <strong>{line.itemName}</strong>
                   <p>
-                    {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST
+                    {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST ·{" "}
+                    {line.priceIncludesGst ? "incl." : "excl."}
                   </p>
                 </div>
                 <strong>{formatCurrencyFromPaise(line.lineTotalPaise)}</strong>
@@ -1595,6 +1945,291 @@ function App() {
           </div>
         </section>
       </div>
+    );
+  }
+
+  function renderManualReceiptView() {
+    const selectedManualItem = items.find((item) => item.id === Number(manualLineForm.itemId)) ?? null;
+    const documentType: DocumentType = "manual_receipt";
+    const receiptTitle = DOCUMENT_TYPE_LABELS[documentType];
+    const reissuingThisDocument = reissueSource?.documentType === documentType;
+
+    return (
+      <section className="billing-shell">
+        <div className="billing-main-row manual-main-row">
+          <aside className="sidebar-panel">
+            <PanelHeader title="Categories" subtitle="Choose items for manual pricing." />
+            <div className="category-list">
+              <button
+                type="button"
+                className={`category-chip ${selectedCategoryFilter === "all" ? "selected" : ""}`}
+                onClick={() => setSelectedCategoryFilter("all")}
+              >
+                All Items
+              </button>
+              {activeCategories.map((category) => (
+                <button
+                  type="button"
+                  key={category.id}
+                  className={`category-chip ${selectedCategoryFilter === category.id ? "selected" : ""}`}
+                  onClick={() => setSelectedCategoryFilter(category.id)}
+                >
+                  {category.name}
+                </button>
+              ))}
+            </div>
+
+            <section className="mini-panel">
+              <label className="field-label" htmlFor="manual-item-search">
+                Search item
+              </label>
+              <input
+                id="manual-item-search"
+                className="touch-input"
+                value={itemSearch}
+                onChange={(event) => setItemSearch(event.currentTarget.value)}
+                placeholder="e.g. Motipak"
+              />
+            </section>
+
+            {reissuingThisDocument ? (
+              <section className="mini-panel">
+                <p className="helper-banner">
+                  Reissuing <strong>{reissueSource.billNumber}</strong>. Saving voids the old {receiptTitle.toLowerCase()}.
+                </p>
+                <button type="button" className="secondary-button full-width-action" onClick={handleCancelManualReissue}>
+                  Cancel Reissue
+                </button>
+              </section>
+            ) : null}
+          </aside>
+
+          <section className="workspace-panel">
+            <PanelHeader
+              title="Manual Items"
+              subtitle="Select an item, then enter the rate or required line total."
+              action={
+                <button type="button" className="ghost-button" onClick={() => setActiveView("admin")}>
+                  Manage menu
+                </button>
+              }
+            />
+
+            <section className="mini-panel manual-entry-panel">
+              <div className="manual-line-form">
+                <LabeledField label="Item">
+                  <select
+                    className="touch-input"
+                    value={manualLineForm.itemId}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      const item = items.find((candidate) => candidate.id === Number(value));
+                      setManualLineForm((current) => ({
+                        ...current,
+                        itemId: value,
+                        rate: item ? toInputPrice(item.unitPricePaise) : current.rate,
+                      }));
+                    }}
+                  >
+                    <option value="">Select item</option>
+                    {items
+                      .filter((item) => item.isActive)
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} ({item.unit})
+                        </option>
+                      ))}
+                  </select>
+                </LabeledField>
+                <LabeledField label="Qty">
+                  <input
+                    className="touch-input"
+                    inputMode="decimal"
+                    value={manualLineForm.quantity}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setManualLineForm((current) => ({ ...current, quantity: value }));
+                    }}
+                  />
+                </LabeledField>
+                <LabeledField label="Rate (optional)">
+                  <input
+                    className="touch-input"
+                    inputMode="decimal"
+                    value={manualLineForm.rate}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setManualLineForm((current) => ({ ...current, rate: value }));
+                    }}
+                    placeholder="0.00"
+                  />
+                </LabeledField>
+                <LabeledField label="Total (required)">
+                  <input
+                    className="touch-input"
+                    inputMode="decimal"
+                    value={manualLineForm.total}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setManualLineForm((current) => ({ ...current, total: value }));
+                    }}
+                    placeholder="0.00"
+                  />
+                </LabeledField>
+                <button type="button" className="primary-button manual-add-button" onClick={handleAddManualLine}>
+                  Add
+                </button>
+              </div>
+              <p className="manual-entry-hint">
+                {selectedManualItem
+                  ? `${selectedManualItem.name} uses ${formatGstRate(selectedManualItem.gstRate)} GST. Total is split into taxable and GST automatically.`
+                  : `${receiptTitle} lines use your item GST slab, but the entered total controls the final price.`}
+              </p>
+            </section>
+
+            <div className="item-grid">
+              {visibleItems.length === 0 ? (
+                <div className="empty-state large">
+                  {items.length === 0
+                    ? "No items yet. Add categories and items from Admin."
+                    : "No items match the current category or search."}
+                </div>
+              ) : (
+                visibleItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="item-tile"
+                    onClick={() => handleSelectManualItem(item)}
+                  >
+                    <span className="eyebrow">{item.categoryName}</span>
+                    <strong>{item.name}</strong>
+                    <p>
+                      {item.unit} • {formatGstRate(item.gstRate)} GST
+                    </p>
+                    <span className="item-price">Custom rate</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
+
+          <aside className="bill-panel">
+            <PanelHeader
+              title={receiptTitle}
+              subtitle={`${manualDraftLines.length} line${manualDraftLines.length === 1 ? "" : "s"}`}
+              action={
+                <button
+                  type="button"
+                  className="ghost-button danger"
+                  onClick={reissuingThisDocument ? handleCancelManualReissue : resetManualReceiptDraft}
+                >
+                  {reissuingThisDocument ? "Cancel Reissue" : "Reset"}
+                </button>
+              }
+            />
+
+            <div className="draft-lines">
+              {manualDraftLines.length === 0 ? (
+                <div className="empty-state draft-empty-hint">
+                  Add items with custom totals to build the receipt.
+                </div>
+              ) : (
+                manualDraftLines.map((line) => (
+                  <div key={line.draftId} className="draft-line manual-draft-line">
+                    <div className="draft-line-main">
+                      <strong>{line.itemName}</strong>
+                      <span className="draft-line-meta">
+                        {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST ·{" "}
+                        {formatCurrencyFromPaise(line.unitPricePaise)}
+                      </span>
+                    </div>
+                    <span className="draft-line-total">{formatCurrencyFromPaise(line.lineTotalPaise)}</span>
+                    <button
+                      type="button"
+                      className="ghost-button small danger manual-remove-line"
+                      onClick={() => handleRemoveManualLine(line.draftId)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <section className="manual-customer-stack">
+              <LabeledField label="Party Name (optional)">
+                <input
+                  className="touch-input"
+                  value={manualCustomerName}
+                  onChange={(event) => setManualCustomerName(event.currentTarget.value)}
+                  placeholder="Customer name"
+                />
+              </LabeledField>
+              <LabeledField label="GSTIN (optional)">
+                <input
+                  className="touch-input"
+                  value={manualCustomerGstin}
+                  onChange={(event) => setManualCustomerGstin(event.currentTarget.value.toUpperCase())}
+                  placeholder="15 digit GSTIN"
+                />
+              </LabeledField>
+            </section>
+
+            <section className="bill-payment-block">
+              <span className="field-label">Payment</span>
+              <div className="segmented bill-payment-segmented">
+                {activePaymentOptions.length === 0 ? (
+                  <div className="empty-state compact-empty">Add a payment option in Admin.</div>
+                ) : (
+                  activePaymentOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={manualPaymentMode === option.name ? "selected" : ""}
+                      onClick={() => setManualPaymentMode(option.name)}
+                    >
+                      {formatPaymentModeLabel(option.name)}
+                    </button>
+                  ))
+                )}
+              </div>
+              <label className="field-label bill-notes-label" htmlFor="manual-notes">
+                Note (optional)
+              </label>
+              <textarea
+                id="manual-notes"
+                className="touch-textarea bill-notes"
+                value={manualNotes}
+                onChange={(event) => setManualNotes(event.currentTarget.value)}
+                placeholder="Short note"
+                rows={2}
+              />
+            </section>
+
+            <section className="totals-panel bill-totals">
+              <div><span>Taxable</span><strong>{formatCurrencyFromPaise(manualTotals.subtotalPaise)}</strong></div>
+              <div><span>GST</span><strong>{formatCurrencyFromPaise(manualTotals.taxPaise)}</strong></div>
+              <div><span>Grand Total</span><strong>{formatCurrencyFromPaise(manualTotals.grandTotalPaise)}</strong></div>
+            </section>
+
+            <div className="checkout-actions">
+              <button type="button" className="primary-button checkout-save" onClick={() => void handleSaveManualReceipt()}>
+                Save {receiptTitle}
+              </button>
+              {reissuingThisDocument ? (
+                <button type="button" className="secondary-button checkout-save" onClick={handleCancelManualReissue}>
+                  Cancel Reissue
+                </button>
+              ) : (
+                <button type="button" className="secondary-button checkout-save" onClick={resetManualReceiptDraft}>
+                  Reset
+                </button>
+              )}
+            </div>
+          </aside>
+        </div>
+      </section>
     );
   }
 
@@ -1700,7 +2335,7 @@ function App() {
           </section>
 
           <section className="panel flex-fill">
-            <PanelHeader title="Items" subtitle="Add menu items with their GST rate and inclusive price." />
+            <PanelHeader title="Items" subtitle="Add menu items with GST-inclusive or GST-exclusive rates." />
             <div className="admin-search-row">
               <LabeledField label="Item Search">
                 <input
@@ -1767,7 +2402,7 @@ function App() {
                   />
                 </LabeledField>
               ) : null}
-              <LabeledField label="Rate (incl. GST)">
+              <LabeledField label={itemForm.priceIncludesGst ? "Rate (incl. GST)" : "Rate (excl. GST)"}>
                 <input
                   className="touch-input"
                   inputMode="decimal"
@@ -1777,6 +2412,19 @@ function App() {
                     setItemForm((current) => ({ ...current, unitPrice: value }));
                   }}
                 />
+              </LabeledField>
+              <LabeledField label="Rate Type">
+                <select
+                  className="touch-input"
+                  value={itemForm.priceIncludesGst ? "inclusive" : "exclusive"}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setItemForm((current) => ({ ...current, priceIncludesGst: value === "inclusive" }));
+                  }}
+                >
+                  <option value="inclusive">Includes GST</option>
+                  <option value="exclusive">Excludes GST</option>
+                </select>
               </LabeledField>
               <LabeledField label="GST Rate">
                 <select
@@ -1838,7 +2486,10 @@ function App() {
                         <td>{index + 1}</td>
                         <td>
                           <strong>{item.name}</strong>
-                          <div className="table-note">{item.unit} · {item.isActive ? "Active" : "Disabled"}</div>
+                          <div className="table-note">
+                            {item.unit} · {item.priceIncludesGst ? "Includes GST" : "Excludes GST"} ·{" "}
+                            {item.isActive ? "Active" : "Disabled"}
+                          </div>
                         </td>
                         <td>{item.categoryName}</td>
                         <td>{formatCurrencyFromPaise(item.unitPricePaise)}</td>
@@ -1856,6 +2507,7 @@ function App() {
                                 customUnit: UNIT_OPTIONS.includes(item.unit as (typeof UNIT_OPTIONS)[number]) ? "" : item.unit,
                                 unitPrice: toInputPrice(item.unitPricePaise),
                                 gstRate: `${item.gstRate}`,
+                                priceIncludesGst: item.priceIncludesGst,
                                 isActive: item.isActive,
                               })
                             }
@@ -2006,6 +2658,12 @@ function App() {
                 <span>Customer</span>
                 <strong>{salePreview.customerName || "Walk-in Customer"}</strong>
               </div>
+              {salePreview.customerGstin ? (
+                <div>
+                  <span>GSTIN</span>
+                  <strong>{salePreview.customerGstin}</strong>
+                </div>
+              ) : null}
               <div>
                 <span>Time</span>
                 <strong>{formatDateTime(salePreview.saleTimestamp)}</strong>
@@ -2019,7 +2677,8 @@ function App() {
                   <div>
                     <strong>{line.itemName}</strong>
                     <p>
-                      {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST
+                      {quantityMillisToDisplay(line.quantityMillis, line.unit)} · {formatGstRate(line.gstRate)} GST ·{" "}
+                      {line.priceIncludesGst ? "incl." : "excl."}
                     </p>
                   </div>
                   <strong>{formatCurrencyFromPaise(line.lineTotalPaise)}</strong>
@@ -2047,19 +2706,17 @@ function App() {
           />
           <div className="filter-row">
             <LabeledField label="From">
-              <input
-                className="touch-input"
-                type="date"
+              <IndianDateInput
+                label="From"
                 value={reportDateFrom}
-                onChange={(event) => setReportDateFrom(event.currentTarget.value)}
+                onChange={setReportDateFrom}
               />
             </LabeledField>
             <LabeledField label="To">
-              <input
-                className="touch-input"
-                type="date"
+              <IndianDateInput
+                label="To"
                 value={reportDateTo}
-                onChange={(event) => setReportDateTo(event.currentTarget.value)}
+                onChange={setReportDateTo}
               />
             </LabeledField>
             <LabeledField label="Search">
@@ -2088,7 +2745,8 @@ function App() {
             value={formatCurrencyFromPaise(filteredReportSales.reduce((sum, sale) => sum + sale.taxTotalPaise, 0))}
           />
           <MetricTile label="Bills" value={`${filteredReportSales.length}`} />
-          <MetricTile label="UPI" value={`${filteredReportSales.filter((sale) => sale.paymentMode.toLowerCase() === "upi").length}`} />
+          <MetricTile label="Days" value={`${dailySalesSummary.length}`} />
+          <MetricTile label="UPI" value={`${filteredReportSales.filter((sale) => sale.paymentMode.toLowerCase().includes("upi")).length}`} />
         </div>
 
         <div className="reports-main-split">
@@ -2138,7 +2796,15 @@ function App() {
                             >
                               Fix
                             </button>
-                          ) : null}
+                          ) : (
+                            <button
+                              type="button"
+                              className="ghost-button small danger"
+                              onClick={() => void handleDeleteVoidedSale(sale)}
+                            >
+                              Delete
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))
@@ -2149,6 +2815,82 @@ function App() {
           </section>
 
           <div className="reports-side-stack">
+            <section className="panel flex-fill">
+              <PanelHeader
+                title="Item sold"
+                action={
+                  <button type="button" className="ghost-button small" onClick={() => void handleExportItemwise()}>
+                    Export
+                  </button>
+                }
+              />
+              <div className="table-shell">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Sale</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemwiseSummary.length === 0 ? (
+                      <EmptyTableRow columns={3} message="No item sales in range." />
+                    ) : (
+                      itemwiseSummary.map((row) => (
+                        <tr key={`${row.categoryName}-${row.itemName}-${row.unit}`}>
+                          <td>
+                            <strong>{row.itemName}</strong>
+                            <div className="table-note">{row.categoryName}</div>
+                          </td>
+                          <td>{quantityMillisToDisplay(row.quantityMillis, row.unit)}</td>
+                          <td>{formatCurrencyFromPaise(row.grossPaise)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="panel flex-fill">
+              <PanelHeader
+                title="Daily sale"
+                action={
+                  <button type="button" className="ghost-button small" onClick={() => void handleExportDailySales()}>
+                    Export
+                  </button>
+                }
+              />
+              <div className="table-shell">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>#</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dailySalesSummary.length === 0 ? (
+                      <EmptyTableRow columns={3} message="No daily sales in range." />
+                    ) : (
+                      dailySalesSummary.map((row) => (
+                      <tr key={row.saleDate}>
+                        <td>
+                            <strong>{formatIndianDate(row.saleDate)}</strong>
+                            <div className="table-note">GST {formatCurrencyFromPaise(row.taxPaise)}</div>
+                          </td>
+                          <td>{row.saleCount}</td>
+                          <td>{formatCurrencyFromPaise(row.grandTotalPaise)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
             <section className="panel flex-fill">
               <PanelHeader
                 title="GST slabs"
@@ -2299,6 +3041,41 @@ function App() {
     );
   }
 
+  if (!loading && appLockStatus?.isLocked) {
+    return (
+      <main className="app-shell lock-shell">
+        {toast ? <div className={`toast toast-${toast.kind}`}>{toast.message}</div> : null}
+        <section className="lock-card">
+          <span className="eyebrow">Access Locked</span>
+          <h1>{shopProfile.shopName}</h1>
+          <p>
+            The 7-day trial on this system has ended. Enter the unlock code to continue using the app.
+          </p>
+          <form
+            className="lock-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleUnlockApp();
+            }}
+          >
+            <LabeledField label="Unlock Code">
+              <input
+                className="touch-input lock-code-input"
+                value={unlockCode}
+                onChange={(event) => setUnlockCode(event.currentTarget.value.toUpperCase())}
+                placeholder="LMB-XXXX-XXXX"
+                autoFocus
+              />
+            </LabeledField>
+            <button type="submit" className="primary-button">
+              Unlock App
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -2310,7 +3087,7 @@ function App() {
           </div>
         </div>
         <nav className="topnav">
-          {(["home", "billing", "admin", "reports", "settings"] as AppView[]).map((view) => (
+          {(["home", "billing", "manual", "admin", "reports", "settings"] as AppView[]).map((view) => (
             <button
               key={view}
               type="button"
@@ -2394,6 +3171,28 @@ function LabeledField({
       <span className="field-label">{label}</span>
       {children}
     </label>
+  );
+}
+
+function IndianDateInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <input
+      className="touch-input indian-date-field"
+      type="date"
+      lang="en-IN"
+      aria-label={`${label} date`}
+      value={value}
+      onClick={(event) => event.currentTarget.showPicker?.()}
+      onChange={(event) => onChange(event.currentTarget.value)}
+    />
   );
 }
 

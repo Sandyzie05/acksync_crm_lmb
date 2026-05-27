@@ -1,7 +1,7 @@
-export type AppView = "home" | "billing" | "admin" | "reports" | "settings";
+export type AppView = "home" | "billing" | "manual" | "admin" | "reports" | "settings";
 
 export type PaymentMode = string;
-export type DocumentType = "receipt" | "gst_invoice";
+export type DocumentType = "receipt" | "manual_receipt" | "gst_invoice";
 export type SaleStatus = "completed" | "voided" | "reissued";
 export type PrinterProfileType = "receipt" | "gst_invoice";
 
@@ -39,6 +39,7 @@ export interface Item {
   unit: string;
   unitPricePaise: number;
   gstRate: number;
+  priceIncludesGst: boolean;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -74,6 +75,7 @@ export interface SaleRegisterRow {
   documentType: DocumentType;
   saleTimestamp: string;
   customerName: string | null;
+  customerGstin: string | null;
   paymentMode: PaymentMode;
   subtotalPaise: number;
   taxTotalPaise: number;
@@ -94,6 +96,7 @@ export interface SaleLine {
   quantityMillis: number;
   unitPricePaise: number;
   gstRate: number;
+  priceIncludesGst: boolean;
   lineSubtotalPaise: number;
   lineTaxPaise: number;
   lineTotalPaise: number;
@@ -113,6 +116,7 @@ export interface DraftLine {
   quantityMillis: number;
   unitPricePaise: number;
   gstRate: number;
+  priceIncludesGst: boolean;
   lineSubtotalPaise: number;
   lineTaxPaise: number;
   lineTotalPaise: number;
@@ -145,13 +149,24 @@ export interface ItemwiseSummaryRow {
   categoryName: string;
   unit: string;
   quantityMillis: number;
+  taxablePaise: number;
+  taxPaise: number;
   grossPaise: number;
+}
+
+export interface DailySalesSummaryRow {
+  saleDate: string;
+  saleCount: number;
+  subtotalPaise: number;
+  taxPaise: number;
+  grandTotalPaise: number;
 }
 
 export interface SaleDraftInput {
   documentType: DocumentType;
   paymentMode: PaymentMode;
   customerName: string;
+  customerGstin?: string;
   notes: string;
   lines: DraftLine[];
   reissueOfSaleId?: number | null;
@@ -174,6 +189,14 @@ export interface RuntimeInfo {
   appConfigDir: string;
   databasePath: string;
   tempDir: string;
+}
+
+export interface AppLockStatus {
+  isLocked: boolean;
+  unlocked: boolean;
+  trialStartedEpochDay: number;
+  daysRemaining: number;
+  trialDays: number;
 }
 
 export interface BillingTotals {

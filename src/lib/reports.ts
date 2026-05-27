@@ -1,6 +1,7 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  DailySalesSummaryRow,
   GstSummaryRow,
   ItemwiseSummaryRow,
   PaymentSummaryRow,
@@ -12,6 +13,7 @@ import {
   downloadFriendlyTimestamp,
   formatDateTime,
   formatGstRate,
+  formatIndianDate,
   formatPaymentModeLabel,
   quantityMillisToString,
 } from "./format";
@@ -75,6 +77,7 @@ export async function exportSalesRegister(
         { header: "To", key: "to", width: 12 },
         { header: "Bill Number", key: "billNumber", width: 18 },
         { header: "Customer", key: "customerName", width: 18 },
+        { header: "GSTIN", key: "customerGstin", width: 18 },
         { header: "Document", key: "documentType", width: 14 },
         { header: "Sale Time", key: "saleTimestamp", width: 22 },
         { header: "Payment", key: "paymentMode", width: 12 },
@@ -85,10 +88,11 @@ export async function exportSalesRegister(
       ],
       rows: sales.map((sale) => ({
         shop: shop.shopName,
-        from: dateFrom,
-        to: dateTo,
+        from: formatIndianDate(dateFrom),
+        to: formatIndianDate(dateTo),
         billNumber: sale.billNumber,
         customerName: sale.customerName ?? "",
+        customerGstin: sale.customerGstin ?? "",
         documentType: DOCUMENT_TYPE_LABELS[sale.documentType],
         saleTimestamp: formatDateTime(sale.saleTimestamp),
         paymentMode: formatPaymentModeLabel(sale.paymentMode),
@@ -123,8 +127,8 @@ export async function exportGstSummary(
       ],
       rows: summary.map((row) => ({
         shop: shop.shopName,
-        from: dateFrom,
-        to: dateTo,
+        from: formatIndianDate(dateFrom),
+        to: formatIndianDate(dateTo),
         gstRate: formatGstRate(row.gstRate),
         taxable: toRupees(row.taxablePaise),
         tax: toRupees(row.taxPaise),
@@ -153,11 +157,44 @@ export async function exportPaymentSummary(
       ],
       rows: summary.map((row) => ({
         shop: shop.shopName,
-        from: dateFrom,
-        to: dateTo,
+        from: formatIndianDate(dateFrom),
+        to: formatIndianDate(dateTo),
         paymentMode: formatPaymentModeLabel(row.paymentMode),
         saleCount: row.saleCount,
         total: toRupees(row.totalPaise),
+      })),
+    },
+  ]);
+}
+
+export async function exportDailySalesSummary(
+  shop: ShopProfile,
+  summary: DailySalesSummaryRow[],
+  dateFrom: string,
+  dateTo: string,
+) {
+  return writeWorkbook("daily_sales_summary", [
+    {
+      name: "Daily Sales",
+      columns: [
+        { header: "Shop", key: "shop", width: 22 },
+        { header: "From", key: "from", width: 12 },
+        { header: "To", key: "to", width: 12 },
+        { header: "Date", key: "saleDate", width: 14 },
+        { header: "Bills", key: "saleCount", width: 10 },
+        { header: "Taxable", key: "subtotal", width: 14 },
+        { header: "GST", key: "tax", width: 14 },
+        { header: "Total Sale", key: "grandTotal", width: 14 },
+      ],
+      rows: summary.map((row) => ({
+        shop: shop.shopName,
+        from: formatIndianDate(dateFrom),
+        to: formatIndianDate(dateTo),
+        saleDate: formatIndianDate(row.saleDate),
+        saleCount: row.saleCount,
+        subtotal: toRupees(row.subtotalPaise),
+        tax: toRupees(row.taxPaise),
+        grandTotal: toRupees(row.grandTotalPaise),
       })),
     },
   ]);
@@ -180,16 +217,20 @@ export async function exportItemwiseSummary(
         { header: "Item", key: "itemName", width: 20 },
         { header: "Unit", key: "unit", width: 12 },
         { header: "Quantity", key: "quantity", width: 12 },
+        { header: "Taxable", key: "taxable", width: 14 },
+        { header: "GST", key: "tax", width: 14 },
         { header: "Gross Value", key: "gross", width: 14 },
       ],
       rows: summary.map((row) => ({
         shop: shop.shopName,
-        from: dateFrom,
-        to: dateTo,
+        from: formatIndianDate(dateFrom),
+        to: formatIndianDate(dateTo),
         categoryName: row.categoryName,
         itemName: row.itemName,
         unit: row.unit,
         quantity: quantityMillisToString(row.quantityMillis),
+        taxable: toRupees(row.taxablePaise),
+        tax: toRupees(row.taxPaise),
         gross: toRupees(row.grossPaise),
       })),
     },

@@ -14,6 +14,7 @@ export const GST_OPTIONS = [0, 5, 18] as const;
 
 export const DOCUMENT_TYPE_LABELS = {
   receipt: "Receipt",
+  manual_receipt: "Manual Receipt",
   gst_invoice: "GST Invoice",
 } as const;
 
@@ -38,21 +39,61 @@ export function formatDateTime(value: string): string {
   }).format(date);
 }
 
+export function formatIndianDate(value: string): string {
+  const [year, month, day] = value.slice(0, 10).split("-");
+
+  if (!year || !month || !day) {
+    return value;
+  }
+
+  return `${day}/${month}/${year}`;
+}
+
+export function isoDateToIndianInput(value: string): string {
+  return formatIndianDate(value);
+}
+
+export function indianDateInputToIso(value: string): string | null {
+  const match = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, dayPart, monthPart, yearPart] = match;
+  const day = Number(dayPart);
+  const month = Number(monthPart);
+  const year = Number(yearPart);
+  const candidate = new Date(year, month - 1, day);
+
+  if (
+    candidate.getFullYear() !== year ||
+    candidate.getMonth() !== month - 1 ||
+    candidate.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${yearPart}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 export function formatGstRate(gstRate: number): string {
   return gstRate === 0 ? "NA" : `${gstRate}%`;
 }
 
 export function formatPaymentModeLabel(paymentMode: string): string {
   const normalized = paymentMode.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    "axis upi": "Axis UPI",
+    cash: "Cash",
+    "credit sale": "Credit sale",
+    phonepe: "PhonePe",
+    upi: "UPI",
+    zomato: "Zomato",
+  };
 
-  if (normalized === "upi") {
-    return "UPI";
-  }
-  if (normalized === "cash") {
-    return "Cash";
-  }
-  if (normalized === "cheque") {
-    return "Cheque";
+  if (labels[normalized]) {
+    return labels[normalized];
   }
 
   return paymentMode
@@ -63,7 +104,12 @@ export function formatPaymentModeLabel(paymentMode: string): string {
 }
 
 export function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = `${today.getMonth() + 1}`.padStart(2, "0");
+  const day = `${today.getDate()}`.padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
 }
 
 export function quantityStringToMillis(rawValue: string): number {
@@ -102,8 +148,25 @@ export function toInclusiveBreakdown(
   unitPricePaise: number,
   quantityMillis: number,
   gstRate: number,
+  priceIncludesGst = true,
 ) {
-  const lineTotalPaise = Math.round((unitPricePaise * quantityMillis) / 1000);
+  const lineBasePaise = Math.round((unitPricePaise * quantityMillis) / 1000);
+  const lineSubtotalPaise = priceIncludesGst
+    ? Math.round((lineBasePaise * 100) / (100 + gstRate))
+    : lineBasePaise;
+  const lineTaxPaise = priceIncludesGst
+    ? lineBasePaise - lineSubtotalPaise
+    : Math.round((lineSubtotalPaise * gstRate) / 100);
+  const lineTotalPaise = lineSubtotalPaise + lineTaxPaise;
+
+  return {
+    lineSubtotalPaise,
+    lineTaxPaise,
+    lineTotalPaise,
+  };
+}
+
+export function toInclusiveBreakdownFromTotal(lineTotalPaise: number, gstRate: number) {
   const lineSubtotalPaise = Math.round((lineTotalPaise * 100) / (100 + gstRate));
   const lineTaxPaise = lineTotalPaise - lineSubtotalPaise;
 
@@ -116,7 +179,12 @@ export function toInclusiveBreakdown(
 
 export function recalculateDraftLine(line: DraftLine, quantityMillis: number): DraftLine {
   const safeQuantity = Math.max(quantityMillis, 0);
-  const totals = toInclusiveBreakdown(line.unitPricePaise, safeQuantity, line.gstRate);
+  const totals = toInclusiveBreakdown(
+    line.unitPricePaise,
+    safeQuantity,
+    line.gstRate,
+    line.priceIncludesGst,
+  );
 
   return {
     ...line,

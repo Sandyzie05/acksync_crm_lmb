@@ -1,1 +1,1 @@
-export const PRINTING_ENABLED = false;
+export const PRINTING_ENABLED = true;

@@ -69,6 +69,40 @@ select:focus-visible {
   overflow: hidden;
 }
 
+.lock-shell {
+  display: grid;
+  place-items: center;
+}
+
+.lock-card {
+  width: min(32rem, 100%);
+  padding: 1.4rem;
+  border-radius: 1.25rem;
+  background: rgba(255, 250, 242, 0.92);
+  border: 1px solid rgba(122, 73, 36, 0.14);
+  box-shadow: 0 28px 60px rgba(112, 63, 23, 0.14);
+}
+
+.lock-card h1 {
+  margin: 0.35rem 0;
+  color: #542915;
+  font: 700 1.65rem/1.15 "Georgia", serif;
+}
+
+.lock-card p {
+  margin: 0 0 1rem;
+  color: #70492d;
+}
+
+.lock-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.lock-code-input {
+  text-transform: uppercase;
+}
+
 .topbar {
   flex-shrink: 0;
   z-index: 20;
@@ -437,15 +471,15 @@ select:focus-visible {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1.35fr 1fr;
+  grid-template-columns: 1.1fr 1.2fr;
   gap: 0.55rem;
   overflow: hidden;
 }
 
 .reports-side-stack {
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.55rem;
   overflow: hidden;
 }
@@ -817,6 +851,10 @@ select:focus-visible {
   background: rgba(255, 255, 255, 0.72);
   color: #6c3c1d;
   border: 1px solid rgba(122, 73, 36, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
 .secondary-button {
@@ -901,6 +939,47 @@ select:focus-visible {
   gap: 0.45rem;
 }
 
+.manual-main-row {
+  grid-template-columns: 0.82fr 1.28fr 1.25fr;
+}
+
+.manual-entry-panel {
+  margin-bottom: 0.55rem;
+  flex-shrink: 0;
+}
+
+.manual-line-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1.35fr) minmax(4.8rem, 0.6fr) minmax(6rem, 0.8fr) minmax(6rem, 0.8fr) auto;
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.manual-entry-hint {
+  margin: 0.55rem 0 0;
+  color: #7f5635;
+  font-size: 0.86rem;
+}
+
+.manual-add-button {
+  min-height: 3.05rem;
+  padding-inline: 1.1rem;
+}
+
+.manual-draft-line {
+  cursor: default;
+}
+
+.manual-remove-line {
+  flex-shrink: 0;
+}
+
+.manual-customer-stack {
+  display: grid;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
 .bill-payment-block {
   flex-shrink: 0;
   display: flex;
@@ -920,8 +999,19 @@ select:focus-visible {
 }
 
 .bill-payment-segmented button {
-  min-height: 2.75rem;
+  min-height: 3.3rem;
+  border-radius: 1rem;
+  padding: 0.55rem 0.5rem;
   font-weight: 700;
+  line-height: 1.15;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.bill-payment-segmented {
+  grid-template-columns: repeat(auto-fit, minmax(5.65rem, 1fr));
+  align-items: stretch;
 }
 
 .bill-totals {
@@ -1094,6 +1184,11 @@ select:focus-visible {
   border: 1px solid rgba(170, 108, 37, 0.14);
 }
 
+.full-width-action {
+  width: 100%;
+  margin-top: 0.6rem;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1118,6 +1213,15 @@ select:focus-visible {
   gap: 0.45rem;
   align-items: end;
   flex-shrink: 0;
+}
+
+.indian-date-field {
+  cursor: text;
+}
+
+.indian-date-field::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 1;
 }
 
 .sale-preview-banner {
@@ -1377,10 +1481,13 @@ select:focus-visible {
   .two-column,
   .filter-row,
   .sale-preview,
+  .reports-side-stack,
   .reports-main-split,
   .catalog-split,
   .admin-management-grid,
   .billing-main-row,
+  .manual-main-row,
+  .manual-line-form,
   .billing-quantity-dock {
     grid-template-columns: 1fr;
   }
