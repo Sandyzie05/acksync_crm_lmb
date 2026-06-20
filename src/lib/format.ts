@@ -82,6 +82,24 @@ export function formatGstRate(gstRate: number): string {
 }
 
 export function formatPaymentModeLabel(paymentMode: string): string {
+  if (paymentMode.includes("|")) {
+    return paymentMode
+      .split("|")
+      .map((part) => {
+        const colonIdx = part.indexOf(":");
+        if (colonIdx === -1) return formatSinglePaymentMode(part);
+        const mode = part.slice(0, colonIdx);
+        const paise = Number(part.slice(colonIdx + 1));
+        const rupees = (paise / 100).toFixed(2);
+        return `${formatSinglePaymentMode(mode)} ₹${rupees}`;
+      })
+      .join(" + ");
+  }
+
+  return formatSinglePaymentMode(paymentMode);
+}
+
+function formatSinglePaymentMode(paymentMode: string): string {
   const normalized = paymentMode.trim().toLowerCase();
   const labels: Record<string, string> = {
     "axis upi": "Axis UPI",

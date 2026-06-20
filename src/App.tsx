@@ -13,10 +13,14 @@ import {
   getItemwiseSummary,
   getPaymentSummary,
   getSaleDetails,
+  getSaleLineDetails,
   listSales,
+  listPartyContacts,
   loadAppSnapshot,
   saveCategory,
   saveItem,
+  savePartyContact,
+  deletePartyContact,
   savePaymentOption,
   savePrinterProfile,
   setCategoryActive,
@@ -49,9 +53,11 @@ import { buildSalePrintHtml, buildThermalReceiptText, printHtmlDocument } from "
 import {
   exportDailySalesSummary,
   exportGstSummary,
+  exportItemInventoryDetail,
   exportItemwiseSummary,
   exportPaymentSummary,
   exportSalesRegister,
+  exportTallySales,
 } from "./lib/reports";
 import type {
   AdminSettings,
@@ -66,6 +72,7 @@ import type {
   GstSummaryRow,
   Item,
   ItemwiseSummaryRow,
+  PartyContact,
   PaymentOption,
   PaymentMode,
   PaymentSummaryRow,
@@ -234,6 +241,10 @@ function App() {
   const [reissueSource, setReissueSource] = useState<SaleDetails | null>(null);
 
   const [manualPaymentMode, setManualPaymentMode] = useState<PaymentMode>("cash");
+  const [manualSplitEnabled, setManualSplitEnabled] = useState(false);
+  const [manualPayment2Mode, setManualPayment2Mode] = useState<PaymentMode>("cash");
+  const [manualPayment2Amount, setManualPayment2Amount] = useState("");
+  const [manualDiscountPercent, setManualDiscountPercent] = useState("0");
   const [manualCustomerName, setManualCustomerName] = useState("");
   const [manualCustomerGstin, setManualCustomerGstin] = useState("");
   const [manualNotes, setManualNotes] = useState("");
@@ -244,6 +255,12 @@ function App() {
     rate: "",
     total: "",
   });
+
+  const [billingSplitEnabled, setBillingSplitEnabled] = useState(false);
+  const [billingPayment2Mode, setBillingPayment2Mode] = useState<PaymentMode>("cash");
+  const [billingPayment2Amount, setBillingPayment2Amount] = useState("");
+
+  const [partyContacts, setPartyContacts] = useState<PartyContact[]>([]);
 
   const [reportDateFrom, setReportDateFrom] = useState(initialReportDate);
   const [reportDateTo, setReportDateTo] = useState(initialReportDate);
@@ -475,6 +492,7 @@ function App() {
     setItems(snapshot.items);
     setPaymentOptions(snapshot.paymentOptions);
     setPrinterProfiles(snapshot.printerProfiles);
+    setPartyContacts(snapshot.partyContacts);
     setPrinterDrafts({
       receipt:
         snapshot.printerProfiles.find((profile) => profile.profileType === "receipt")?.printerName ?? "",
@@ -561,6 +579,9 @@ function App() {
     setManualCustomerGstin("");
     setManualNotes("");
     setManualPaymentMode(getDefaultPaymentMode());
+    setManualSplitEnabled(false);
+    setManualPayment2Amount("");
+    setManualDiscountPercent("0");
     setManualLineForm({
       itemId: "",
       quantity: "1",
@@ -575,6 +596,48 @@ function App() {
     return printerProfiles.find((profile) => profile.profileType === "receipt")?.printerName.trim() ?? "";
   }
 
+  function buildSplitPaymentMode(
+    mode1: PaymentMode,
+    splitEnabled: boolean,
+    mode2: PaymentMode,
+    amount2Str: string,
+    grandTotalPaise: number,
+  ): PaymentMode {
+    if (!splitEnabled || !mode2 || mode2 === mode1) {
+      return mode1;
+    }
+    const amount2Paise = Math.round(Math.max(0, parseFloat(amount2Str) || 0) * 100);
+    const amount1Paise = Math.max(0, grandTotalPaise - amount2Paise);
+    if (amount2Paise <= 0) {
+      return mode1;
+    }
+    return `${mode1}:${amount1Paise}|${mode2}:${amount2Paise}`;
+  }
+
+  async function handleSavePartyContact(name: string, gstin: string) {
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    try {
+      await savePartyContact(cleanName, gstin);
+      const contacts = await listPartyContacts();
+      setPartyContacts(contacts);
+      setToast({ kind: "success", message: `Party "${cleanName}" saved.` });
+    } catch (error) {
+      setToast({ kind: "error", message: getErrorMessage(error, "Could not save party contact.") });
+    }
+  }
+
+  async function handleDeletePartyContact(contact: PartyContact) {
+    try {
+      await deletePartyContact(contact.id);
+      const contacts = await listPartyContacts();
+      setPartyContacts(contacts);
+      setToast({ kind: "success", message: `Party "${contact.name}" removed.` });
+    } catch (error) {
+      setToast({ kind: "error", message: getErrorMessage(error, "Could not remove party contact.") });
+    }
+  }
+
   function resetBillingDraft() {
     setDraftLines([]);
     setSelectedDraftLineId(null);
@@ -587,6 +650,8 @@ function App() {
     setReissueSource(null);
     setBillingDocumentType("receipt");
     setPaymentMode(getDefaultPaymentMode());
+    setBillingSplitEnabled(false);
+    setBillingPayment2Amount("");
     setSelectedCategoryFilter("all");
     setItemSearch("");
   }
@@ -1073,9 +1138,17 @@ function App() {
     setWorkingLabel("Saving sale locally…");
 
     try {
+      const billingGrandTotal = draftLines.reduce((s, l) => s + l.lineTotalPaise, 0);
+      const effectiveBillingPaymentMode = buildSplitPaymentMode(
+        paymentMode,
+        billingSplitEnabled,
+        billingPayment2Mode,
+        billingPayment2Amount,
+        billingGrandTotal,
+      );
       const saleId = await completeSale({
         documentType: billingDocumentType,
-        paymentMode,
+        paymentMode: effectiveBillingPaymentMode,
         customerName: previewCustomerName,
         customerGstin: "",
         notes: billNotes,
@@ -1343,6 +1416,19 @@ function App() {
       return;
     }
 
+    const discountPct = Math.min(100, Math.max(0, parseFloat(manualDiscountPercent) || 0));
+    const rawGrandTotal = manualDraftLines.reduce((s, l) => s + l.lineTotalPaise, 0);
+    const discountPaise = Math.round(rawGrandTotal * discountPct / 100);
+    const effectiveTotal = rawGrandTotal - discountPaise;
+
+    const effectivePaymentMode = buildSplitPaymentMode(
+      manualPaymentMode,
+      manualSplitEnabled,
+      manualPayment2Mode,
+      manualPayment2Amount,
+      effectiveTotal,
+    );
+
     setLoading(true);
     setWorkingLabel("Saving manual receipt…");
 
@@ -1350,12 +1436,13 @@ function App() {
       const documentType: DocumentType = "manual_receipt";
       const saleId = await completeSale({
         documentType,
-        paymentMode: manualPaymentMode,
+        paymentMode: effectivePaymentMode,
         customerName: manualCustomerName,
         customerGstin: manualCustomerGstin,
         notes: manualNotes,
         lines: manualDraftLines,
         reissueOfSaleId: reissueSource?.documentType === documentType ? reissueSource.id : null,
+        discountPaise,
       });
       const sale = await getSaleDetails(saleId);
       const snapshot = await loadAppSnapshot();
@@ -1495,6 +1582,45 @@ function App() {
       setToast({
         kind: "error",
         message: getErrorMessage(error, "Daily sale export failed."),
+      });
+    }
+  }
+
+  async function handleExportInventoryDetail() {
+    const range = readReportDateRange();
+    if (!range) {
+      return;
+    }
+
+    try {
+      const lines = await getSaleLineDetails(range.dateFrom, range.dateTo);
+      const exported = await exportItemInventoryDetail(shopProfile, lines, range.dateFrom, range.dateTo);
+      if (exported) {
+        setToast({ kind: "success", message: "Inventory detail report exported." });
+      }
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "Inventory detail export failed."),
+      });
+    }
+  }
+
+  async function handleExportTally() {
+    const range = readReportDateRange();
+    if (!range) {
+      return;
+    }
+
+    try {
+      const exported = await exportTallySales(shopProfile, reportSales, range.dateFrom, range.dateTo);
+      if (exported) {
+        setToast({ kind: "success", message: "Tally CSV exported." });
+      }
+    } catch (error) {
+      setToast({
+        kind: "error",
+        message: getErrorMessage(error, "Tally export failed."),
       });
     }
   }
@@ -1772,6 +1898,41 @@ function App() {
                 ))
               )}
             </div>
+            <div className="split-payment-toggle">
+              <label className="toggle-label">
+                <input
+                  type="checkbox"
+                  checked={billingSplitEnabled}
+                  onChange={(e) => setBillingSplitEnabled(e.currentTarget.checked)}
+                />
+                <span>Split payment</span>
+              </label>
+            </div>
+            {billingSplitEnabled ? (
+              <div className="split-payment-row">
+                <div className="segmented bill-payment-segmented">
+                  {activePaymentOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={billingPayment2Mode === option.name ? "selected" : ""}
+                      onClick={() => setBillingPayment2Mode(option.name)}
+                    >
+                      {formatPaymentModeLabel(option.name)}
+                    </button>
+                  ))}
+                </div>
+                <LabeledField label="2nd mode amount (₹)">
+                  <input
+                    className="touch-input"
+                    inputMode="decimal"
+                    value={billingPayment2Amount}
+                    onChange={(e) => setBillingPayment2Amount(e.currentTarget.value)}
+                    placeholder="0.00"
+                  />
+                </LabeledField>
+              </div>
+            ) : null}
             <label className="field-label bill-notes-label" htmlFor="bill-notes">
               Note (optional)
             </label>
@@ -2158,13 +2319,35 @@ function App() {
             </div>
 
             <section className="manual-customer-stack">
+              <datalist id="party-contacts-list">
+                {partyContacts.map((c) => (
+                  <option key={c.id} value={c.name} />
+                ))}
+              </datalist>
               <LabeledField label="Party Name (optional)">
-                <input
-                  className="touch-input"
-                  value={manualCustomerName}
-                  onChange={(event) => setManualCustomerName(event.currentTarget.value)}
-                  placeholder="Customer name"
-                />
+                <div className="party-input-row">
+                  <input
+                    className="touch-input"
+                    list="party-contacts-list"
+                    value={manualCustomerName}
+                    onChange={(event) => {
+                      const val = event.currentTarget.value;
+                      setManualCustomerName(val);
+                      const match = partyContacts.find((c) => c.name === val);
+                      if (match) setManualCustomerGstin(match.gstin);
+                    }}
+                    placeholder="Customer name"
+                  />
+                  <button
+                    type="button"
+                    className="ghost-button small"
+                    title="Save party for future use"
+                    onClick={() => void handleSavePartyContact(manualCustomerName, manualCustomerGstin)}
+                    disabled={!manualCustomerName.trim()}
+                  >
+                    Save
+                  </button>
+                </div>
               </LabeledField>
               <LabeledField label="GSTIN (optional)">
                 <input
@@ -2194,6 +2377,41 @@ function App() {
                   ))
                 )}
               </div>
+              <div className="split-payment-toggle">
+                <label className="toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={manualSplitEnabled}
+                    onChange={(e) => setManualSplitEnabled(e.currentTarget.checked)}
+                  />
+                  <span>Split payment</span>
+                </label>
+              </div>
+              {manualSplitEnabled ? (
+                <div className="split-payment-row">
+                  <div className="segmented bill-payment-segmented">
+                    {activePaymentOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={manualPayment2Mode === option.name ? "selected" : ""}
+                        onClick={() => setManualPayment2Mode(option.name)}
+                      >
+                        {formatPaymentModeLabel(option.name)}
+                      </button>
+                    ))}
+                  </div>
+                  <LabeledField label="2nd mode amount (₹)">
+                    <input
+                      className="touch-input"
+                      inputMode="decimal"
+                      value={manualPayment2Amount}
+                      onChange={(e) => setManualPayment2Amount(e.currentTarget.value)}
+                      placeholder="0.00"
+                    />
+                  </LabeledField>
+                </div>
+              ) : null}
               <label className="field-label bill-notes-label" htmlFor="manual-notes">
                 Note (optional)
               </label>
@@ -2207,11 +2425,35 @@ function App() {
               />
             </section>
 
-            <section className="totals-panel bill-totals">
-              <div><span>Taxable</span><strong>{formatCurrencyFromPaise(manualTotals.subtotalPaise)}</strong></div>
-              <div><span>GST</span><strong>{formatCurrencyFromPaise(manualTotals.taxPaise)}</strong></div>
-              <div><span>Grand Total</span><strong>{formatCurrencyFromPaise(manualTotals.grandTotalPaise)}</strong></div>
-            </section>
+            {(() => {
+              const discountPct = Math.min(100, Math.max(0, parseFloat(manualDiscountPercent) || 0));
+              const discountPaise = Math.round(manualTotals.grandTotalPaise * discountPct / 100);
+              const finalTotal = manualTotals.grandTotalPaise - discountPaise;
+              return (
+                <section className="totals-panel bill-totals">
+                  <div><span>Taxable</span><strong>{formatCurrencyFromPaise(manualTotals.subtotalPaise)}</strong></div>
+                  <div><span>GST</span><strong>{formatCurrencyFromPaise(manualTotals.taxPaise)}</strong></div>
+                  <div><span>Gross Total</span><strong>{formatCurrencyFromPaise(manualTotals.grandTotalPaise)}</strong></div>
+                  <div className="discount-row">
+                    <label className="field-label discount-label" htmlFor="manual-discount">
+                      Discount %
+                    </label>
+                    <input
+                      id="manual-discount"
+                      className="touch-input discount-input"
+                      inputMode="decimal"
+                      value={manualDiscountPercent}
+                      onChange={(e) => setManualDiscountPercent(e.currentTarget.value)}
+                      placeholder="0"
+                    />
+                    {discountPaise > 0 ? (
+                      <span className="discount-amount">−{formatCurrencyFromPaise(discountPaise)}</span>
+                    ) : null}
+                  </div>
+                  <div className="payable-row"><span>Payable</span><strong>{formatCurrencyFromPaise(finalTotal)}</strong></div>
+                </section>
+              );
+            })()}
 
             <div className="checkout-actions">
               <button type="button" className="primary-button checkout-save" onClick={() => void handleSaveManualReceipt()}>
@@ -2615,6 +2857,44 @@ function App() {
               </table>
             </div>
           </section>
+
+          <section className="panel flex-fill">
+            <PanelHeader title="Party Contacts" subtitle="Save customer names and GSTINs for quick reuse." />
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th>GSTIN</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {partyContacts.length === 0 ? (
+                    <EmptyTableRow columns={4} message="No party contacts saved yet. Use the Save button on Manual Receipt." />
+                  ) : (
+                    partyContacts.map((contact, index) => (
+                      <tr key={contact.id}>
+                        <td>{index + 1}</td>
+                        <td>{contact.name}</td>
+                        <td>{contact.gstin || "—"}</td>
+                        <td className="table-actions">
+                          <button
+                            type="button"
+                            className="ghost-button small danger"
+                            onClick={() => void handleDeletePartyContact(contact)}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </section>
     );
@@ -2699,9 +2979,17 @@ function App() {
             title="Reports"
             subtitle="Date range, register, and summaries."
             action={
-              <button type="button" className="secondary-button" onClick={() => void handleExportSales()}>
-                Export sales
-              </button>
+              <div className="export-actions-row">
+                <button type="button" className="secondary-button" onClick={() => void handleExportSales()}>
+                  Export Excel
+                </button>
+                <button type="button" className="secondary-button" onClick={() => void handleExportTally()}>
+                  Export Tally
+                </button>
+                <button type="button" className="secondary-button" onClick={() => void handleExportInventoryDetail()}>
+                  Inventory Detail
+                </button>
+              </div>
             }
           />
           <div className="filter-row">
@@ -2760,13 +3048,14 @@ function App() {
                     <th>Time</th>
                     <th>Pay</th>
                     <th>Total</th>
+                    <th>GST%</th>
                     <th>Stat</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredReportSales.length === 0 ? (
-                    <EmptyTableRow columns={6} message="No sales in this date range." />
+                    <EmptyTableRow columns={7} message="No sales in this date range." />
                   ) : (
                     filteredReportSales.map((sale) => (
                       <tr key={sale.id}>
@@ -2776,9 +3065,21 @@ function App() {
                         </td>
                         <td>{formatDateTime(sale.saleTimestamp)}</td>
                         <td>{formatPaymentModeLabel(sale.paymentMode)}</td>
-                        <td>{formatCurrencyFromPaise(sale.grandTotalPaise)}</td>
                         <td>
-                          <span className={`status-pill status-${sale.status}`}>{sale.status}</span>
+                          {formatCurrencyFromPaise(sale.grandTotalPaise)}
+                          {sale.discountPaise > 0 ? (
+                            <div className="table-note discount-note">-{formatCurrencyFromPaise(sale.discountPaise)} disc.</div>
+                          ) : null}
+                        </td>
+                        <td className="gst-pct-cell">
+                          {sale.subtotalPaise > 0
+                            ? `${Math.round((sale.taxTotalPaise / sale.subtotalPaise) * 100)}%`
+                            : "0%"}
+                        </td>
+                        <td>
+                          <span className={`status-pill status-${sale.status}`}>
+                            {sale.status === "reissued" ? "Completed" : sale.status}
+                          </span>
                         </td>
                         <td className="table-actions">
                           <button

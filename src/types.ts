@@ -80,10 +80,18 @@ export interface SaleRegisterRow {
   subtotalPaise: number;
   taxTotalPaise: number;
   grandTotalPaise: number;
+  discountPaise: number;
   status: SaleStatus;
   notes: string | null;
   reissueOfSaleId: number | null;
   voidedBySaleId: number | null;
+}
+
+export interface PartyContact {
+  id: number;
+  name: string;
+  gstin: string;
+  createdAt: string;
 }
 
 export interface SaleLine {
@@ -170,6 +178,22 @@ export interface SaleDraftInput {
   notes: string;
   lines: DraftLine[];
   reissueOfSaleId?: number | null;
+  discountPaise?: number;
+}
+
+export interface SaleLineDetail {
+  billNumber: string;
+  saleTimestamp: string;
+  paymentMode: string;
+  itemName: string;
+  categoryName: string;
+  unit: string;
+  quantityMillis: number;
+  unitPricePaise: number;
+  gstRate: number;
+  lineSubtotalPaise: number;
+  lineTaxPaise: number;
+  lineTotalPaise: number;
 }
 
 export interface AppSnapshot {
@@ -182,6 +206,7 @@ export interface AppSnapshot {
   dashboardMetrics: DashboardMetrics;
   recentSales: SaleRegisterRow[];
   auditTrail: AuditEntry[];
+  partyContacts: PartyContact[];
 }
 
 export interface RuntimeInfo {

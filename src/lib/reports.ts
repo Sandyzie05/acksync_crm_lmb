@@ -5,6 +5,7 @@ import type {
   GstSummaryRow,
   ItemwiseSummaryRow,
   PaymentSummaryRow,
+  SaleLineDetail,
   SaleRegisterRow,
   ShopProfile,
 } from "../types";
@@ -235,4 +236,130 @@ export async function exportItemwiseSummary(
       })),
     },
   ]);
+}
+
+export async function exportItemInventoryDetail(
+  shop: ShopProfile,
+  lines: SaleLineDetail[],
+  dateFrom: string,
+  dateTo: string,
+) {
+  return writeWorkbook("item_inventory_detail", [
+    {
+      name: "Inventory Detail",
+      columns: [
+        { header: "Shop", key: "shop", width: 22 },
+        { header: "From", key: "from", width: 12 },
+        { header: "To", key: "to", width: 12 },
+        { header: "Bill Number", key: "billNumber", width: 18 },
+        { header: "Sale Time", key: "saleTimestamp", width: 22 },
+        { header: "Payment", key: "paymentMode", width: 16 },
+        { header: "Category", key: "categoryName", width: 18 },
+        { header: "Item", key: "itemName", width: 22 },
+        { header: "Unit", key: "unit", width: 10 },
+        { header: "Quantity", key: "quantity", width: 12 },
+        { header: "Rate", key: "rate", width: 12 },
+        { header: "GST %", key: "gstRate", width: 10 },
+        { header: "Taxable", key: "taxable", width: 14 },
+        { header: "GST", key: "tax", width: 12 },
+        { header: "Total", key: "total", width: 14 },
+      ],
+      rows: lines.map((line) => ({
+        shop: shop.shopName,
+        from: formatIndianDate(dateFrom),
+        to: formatIndianDate(dateTo),
+        billNumber: line.billNumber,
+        saleTimestamp: formatDateTime(line.saleTimestamp),
+        paymentMode: formatPaymentModeLabel(line.paymentMode),
+        categoryName: line.categoryName,
+        itemName: line.itemName,
+        unit: line.unit,
+        quantity: quantityMillisToString(line.quantityMillis),
+        rate: toRupees(line.unitPricePaise),
+        gstRate: formatGstRate(line.gstRate),
+        taxable: toRupees(line.lineSubtotalPaise),
+        tax: toRupees(line.lineTaxPaise),
+        total: toRupees(line.lineTotalPaise),
+      })),
+    },
+  ]);
+}
+
+export async function exportTallySales(
+  shop: ShopProfile,
+  sales: SaleRegisterRow[],
+  dateFrom: string,
+  dateTo: string,
+): Promise<boolean> {
+  const targetPath = await save({
+    title: "Export Tally CSV",
+    defaultPath: `tally_sales_${downloadFriendlyTimestamp()}.csv`,
+    filters: [{ name: "CSV File", extensions: ["csv"] }],
+  });
+
+  if (!targetPath) {
+    return false;
+  }
+
+  const headers = [
+    "Date",
+    "Voucher Type",
+    "Voucher Number",
+    "Party Name",
+    "Payment Mode",
+    "Taxable Amount",
+    "CGST",
+    "SGST",
+    "IGST",
+    "Total Amount",
+    "Narration",
+  ];
+
+  const rows = sales
+    .filter((s) => s.status !== "voided")
+    .map((sale) => {
+      const date = formatIndianDate(sale.saleTimestamp.slice(0, 10));
+      const taxHalf = toRupees(Math.round(sale.taxTotalPaise / 2));
+      const isInterState = (sale.customerGstin ?? "").startsWith(
+        shop.gstin.slice(0, 2),
+      )
+        ? false
+        : Boolean(sale.customerGstin);
+      const cgst = isInterState ? 0 : taxHalf;
+      const sgst = isInterState ? 0 : taxHalf;
+      const igst = isInterState ? toRupees(sale.taxTotalPaise) : 0;
+
+      return [
+        date,
+        "Sales",
+        sale.billNumber,
+        sale.customerName ?? shop.shopName,
+        formatPaymentModeLabel(sale.paymentMode),
+        toRupees(sale.subtotalPaise),
+        cgst,
+        sgst,
+        igst,
+        toRupees(sale.grandTotalPaise),
+        sale.notes ?? "",
+      ]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .join(",");
+    });
+
+  const csvContent = [
+    `"Shop","${shop.shopName}"`,
+    `"From","${formatIndianDate(dateFrom)}","To","${formatIndianDate(dateTo)}"`,
+    "",
+    headers.map((h) => `"${h}"`).join(","),
+    ...rows,
+  ].join("\n");
+
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(csvContent);
+  await invoke("write_binary_file", {
+    path: targetPath,
+    bytes: Array.from(bytes),
+  });
+
+  return true;
 }

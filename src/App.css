@@ -1547,3 +1547,203 @@ select:focus-visible {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* ── Split payment & discount ────────────────────────────────── */
+.split-payment-toggle {
+  margin: 0.4rem 0 0.2rem;
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  color: #734321;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-label input[type="checkbox"] {
+  accent-color: #bb5c21;
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+}
+
+.split-payment-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border-radius: 0.9rem;
+  background: rgba(255, 248, 236, 0.7);
+  border: 1px solid rgba(122, 73, 36, 0.1);
+  margin-bottom: 0.4rem;
+}
+
+/* Discount row inside totals panel */
+.discount-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.discount-label {
+  white-space: nowrap;
+  font-size: 0.84rem;
+  color: #734321;
+  min-width: 5rem;
+}
+
+.discount-input {
+  max-width: 5rem !important;
+  text-align: right;
+}
+
+.discount-amount {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #2e7c4f;
+  white-space: nowrap;
+}
+
+.payable-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 2px solid rgba(187, 92, 33, 0.25);
+  padding-top: 0.5rem;
+  margin-top: 0.2rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+/* Party contact input row */
+.party-input-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+
+.party-input-row .touch-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.party-input-row .ghost-button {
+  flex-shrink: 0;
+  border-radius: 0.75rem;
+  align-self: stretch;
+}
+
+/* GST % cell in sale register */
+.gst-pct-cell {
+  font-size: 0.82rem;
+  color: #734321;
+  white-space: nowrap;
+}
+
+.discount-note {
+  color: #2e7c4f;
+  font-size: 0.75rem;
+}
+
+/* Export actions row in report header */
+.export-actions-row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* ── POS resolution improvements ────────────────────────────── */
+
+/* Larger touch targets on POS screens (typically 1366×768 or 1024×768) */
+@media (max-height: 800px) {
+  .app-shell {
+    padding: 0.4rem 0.6rem;
+    gap: 0.4rem;
+  }
+
+  .topbar {
+    padding: 0.35rem 0.7rem;
+    border-radius: 0.9rem;
+  }
+
+  .brand-lockup h1 {
+    font-size: 1.05rem;
+  }
+
+  .topnav button,
+  .ghost-button,
+  .secondary-button,
+  .primary-button,
+  .segmented button,
+  .category-chip {
+    min-height: 2.6rem;
+    font-size: 0.88rem;
+  }
+
+  .touch-input,
+  .touch-textarea {
+    font-size: 0.92rem;
+    padding: 0.5rem 0.75rem;
+    min-height: 2.4rem;
+  }
+
+  .item-tile {
+    padding: 0.6rem 0.5rem;
+    min-height: 5rem;
+  }
+
+  .item-tile strong {
+    font-size: 0.9rem;
+  }
+
+  .panel {
+    padding: 0.7rem;
+    border-radius: 0.9rem;
+  }
+
+  .totals-panel div {
+    padding: 0.25rem 0;
+  }
+
+  .draft-line {
+    padding: 0.45rem 0;
+  }
+
+  .checkout-save {
+    min-height: 2.9rem;
+    font-size: 1rem;
+  }
+
+  .field-label {
+    font-size: 0.75rem;
+  }
+
+  h2 {
+    font-size: 0.95rem !important;
+  }
+}
+
+@media (max-width: 1100px) and (min-width: 821px) {
+  .billing-main-row,
+  .manual-main-row {
+    gap: 0.5rem;
+  }
+
+  .sidebar-panel {
+    min-width: 9rem;
+    max-width: 12rem;
+  }
+
+  .item-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Reissued status now shows as completed visually */
+.status-reissued {
+  color: #2e7c4f;
+  background: rgba(72, 173, 112, 0.15);
+}
